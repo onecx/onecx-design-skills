@@ -81,9 +81,15 @@ export function runAudit(db: DatabaseSync, format: string): void {
     const e = hid.get(sid) ?? { n: 0, first: r.id };
     e.n++; hid.set(sid, e);
   }
+  const hiddenText = db.prepare(`WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id=t.id) SELECT n.text FROM t CROSS JOIN nodes n ON n.id=t.id WHERE n.type='text' AND n.text IS NOT NULL LIMIT 1`);
   for (const [sid, e] of hid) {
     const sc = screens.get(sid);
-    add('hidden', 1, e.first, sc?.page ?? pageFor(e.first), `${e.n} hidden layer(s) in ${sc ? `screen ${sid} "${sc.name}"` : 'area without screen'}: intentional (variant/state) or leftover? Example ${e.first}`);
+    const tx = (hiddenText.get(e.first) as { text: string } | undefined)?.text;
+    add('hidden', tx ? 2 : 1, e.first, sc?.page ?? pageFor(e.first), `${e.n} hidden layer(s) in ${sc ? `screen ${sid} "${sc.name}"` : 'area without screen'}: intentional (variant/state) or leftover? Example ${e.first}${tx ? ` contains the text "${tx.slice(0, 40)}": should it be visible?` : ''}`);
+  }
+  // typical conversion leftovers: Figma slot placeholders carried over as real lilac boxes
+  for (const r of db.prepare(`SELECT id, name FROM nodes WHERE type IN ('frame','component') AND lower(name) = 'slot' AND evis = 1 AND (styles LIKE '%#e8daff%' OR styles LIKE '%#6929c4%') LIMIT 10`).all() as { id: string; name: string }[]) {
+    add('conversion', 2, r.id, pageFor(r.id), `Frame "${r.name}" has a lilac fill/stroke (#e8daff / #6929c4): this is slot-placeholder styling that was probably carried over literally from the editor. Ask whether a visible box is intended (${r.id})`);
   }
   const empties = new Map<string, { n: number; first: string }>();
   for (const r of db.prepare(`SELECT id FROM nodes WHERE type='frame' AND nchild=0 AND visible=1 AND styles IS NULL AND depth>0 AND w>0 AND h>0`).all() as { id: string }[]) {

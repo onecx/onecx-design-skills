@@ -101,6 +101,12 @@ describe('queries', () => {
     expect(text(o)).toMatch(/more lines truncated/);
   });
 
+  it('search finds override texts of instances', () => {
+    const { db } = openIndex(file);
+    const o = out(); search(db, o, 'Anmelden', undefined, 10);
+    expect(text(o)).toContain('inst1');
+  });
+
   it('search finds names and texts', () => {
     const { db } = openIndex(file);
     const o = out(); search(db, o, 'willkom', undefined, 10);
@@ -129,6 +135,9 @@ describe('spec, tokens, render', () => {
     expect(r.text).toContain('color=$color-primary');
     expect(r.text).toContain('img(assets/');
     expect(r.text).toContain('→Button');
+    // the instance content comes from its component with the override applied
+    expect(r.text).toMatch(/"Label" text .*text="Anmelden"/);
+    expect(r.text).not.toContain('text="Button"');
     expect(r.text).toContain('"Willkommen"');
   });
 

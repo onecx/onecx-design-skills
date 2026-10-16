@@ -1,9 +1,9 @@
 import { DatabaseSync, type StatementSync } from './sqlite.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AssetRow, ComponentRow, InteractionRow, NodeRow, NoteRow, Sink, VariableRow } from './model.js';
+import type { AssetRow, ComponentRow, DerivedRow, InteractionRow, NodeRow, NoteRow, PropDefRow, Sink, VarModeRow, VariableRow } from './model.js';
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 21;
 
 const SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
@@ -11,7 +11,7 @@ CREATE TABLE pages(idx INTEGER PRIMARY KEY, id TEXT, name TEXT, node_count INTEG
 CREATE TABLE nodes(
   id TEXT PRIMARY KEY, parent_id TEXT, page INTEGER, type TEXT, name TEXT, depth INTEGER, ord INTEGER,
   x REAL, y REAL, w REAL, h REAL, layout TEXT, styles TEXT, text TEXT, component_ref TEXT,
-  visible INTEGER, raw TEXT, nchild INTEGER DEFAULT 0, pos TEXT, evis INTEGER DEFAULT 1
+  visible INTEGER, raw TEXT, nchild INTEGER DEFAULT 0, pos TEXT, evis INTEGER DEFAULT 1, stext TEXT
 );
 CREATE TABLE geometry(node_id TEXT PRIMARY KEY, data TEXT);
 CREATE TABLE components(
@@ -28,6 +28,9 @@ CREATE TABLE screens(
   node_id TEXT PRIMARY KEY, page INTEGER, name TEXT, w REAL, h REAL, ord INTEGER, purpose TEXT,
   group_key TEXT, state_hint TEXT, device TEXT, texts TEXT, n_nodes INTEGER, board_name TEXT, n_inputs INTEGER, n_rows INTEGER
 );
+CREATE TABLE propdefs(owner TEXT, id TEXT, name TEXT, type TEXT, initial TEXT, parent TEXT);
+CREATE TABLE derived(inst TEXT, p TEXT, w REAL, h REAL, x REAL, y REAL, geom TEXT);
+CREATE TABLE varmodes(set_id TEXT, set_key TEXT, set_name TEXT, mode_id TEXT, mode_name TEXT);
 CREATE TABLE edges(src TEXT, dst TEXT, trigger TEXT, action TEXT, via TEXT);
 CREATE TABLE findings(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, severity INTEGER, node_id TEXT, page INTEGER, msg TEXT);
 `;
@@ -43,6 +46,9 @@ CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
 CREATE INDEX IF NOT EXISTS idx_find_page ON findings(page, severity);
 CREATE INDEX IF NOT EXISTS idx_screens_page ON screens(page, ord);
 CREATE INDEX IF NOT EXISTS idx_comp_set ON components(set_id);
+CREATE INDEX IF NOT EXISTS idx_propdefs_owner ON propdefs(owner);
+CREATE INDEX IF NOT EXISTS idx_propdefs_id ON propdefs(id);
+CREATE INDEX IF NOT EXISTS idx_derived_inst ON derived(inst);
 CREATE VIRTUAL TABLE nodes_fts USING fts5(name, text, content='nodes', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2');
 `;
 
@@ -67,6 +73,8 @@ const BATCH = 1000;
 export class IndexWriter implements Sink {
   private nodes: NodeRow[] = [];
   private geoms: [string, string][] = [];
+  private pdefs: PropDefRow[] = [];
+  private derivs: DerivedRow[] = [];
   private stmtNode: StatementSync;
   private stmtGeom: StatementSync;
   private stmts: Record<string, StatementSync>;
@@ -109,13 +117,19 @@ export class IndexWriter implements Sink {
   }
 
   flush(): void {
-    if (!this.nodes.length && !this.geoms.length) return;
+    if (!this.nodes.length && !this.geoms.length && !this.pdefs.length && !this.derivs.length) return;
     const rows = this.nodes;
     const geoms = this.geoms;
+    const pdefs = this.pdefs;
+    const derivs = this.derivs;
     this.nodes = [];
     this.geoms = [];
+    this.pdefs = [];
+    this.derivs = [];
     this.tx(() => {
       for (const [id, data] of geoms) this.stmtGeom.run(id, data);
+      if (pdefs.length) { const st = this.db.prepare('INSERT INTO propdefs(owner,id,name,type,initial,parent) VALUES(?,?,?,?,?,?)'); for (const r of pdefs) st.run(r.owner, r.id, r.name, r.type, JSON.stringify(r.initial ?? null), r.parent); }
+      if (derivs.length) { const st = this.db.prepare('INSERT INTO derived(inst,p,w,h,x,y,geom) VALUES(?,?,?,?,?,?,?)'); for (const r of derivs) st.run(r.inst, r.p, r.w ?? null, r.h ?? null, r.x ?? null, r.y ?? null, r.geom ?? null); }
       for (const r of rows) {
         this.stmtNode.run(
           r.id, r.parent_id, r.page, r.type, r.name, r.depth, r.ord, r.x, r.y, r.w, r.h,
@@ -130,6 +144,16 @@ export class IndexWriter implements Sink {
   }
   variable(r: VariableRow): void {
     this.tx(() => this.stmts.vari.run(r.id, r.name, r.collection, r.type, JSON.stringify(r.values), r.guid ?? null));
+  }
+  propdef(r: PropDefRow): void {
+    this.pdefs.push(r);
+  }
+  derived(r: DerivedRow): void {
+    this.derivs.push(r);
+    if (this.derivs.length >= BATCH * 5) this.flush();
+  }
+  varmode(r: VarModeRow): void {
+    this.tx(() => this.db.prepare('INSERT INTO varmodes(set_id,set_key,set_name,mode_id,mode_name) VALUES(?,?,?,?,?)').run(r.set_id, r.set_key, r.set_name, r.mode_id, r.mode_name));
   }
   asset(r: AssetRow): void {
     this.tx(() => this.stmts.asset.run(r.hash, r.path, r.mime, r.size, r.w ?? null, r.h ?? null));

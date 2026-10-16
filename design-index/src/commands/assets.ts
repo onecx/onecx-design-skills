@@ -24,7 +24,15 @@ export async function screenshot(ix: Opened, out: Out, id: string, o: { maxEdge:
   let dims = `${r.w}×${r.h}`;
   if (o.svg) { fs.writeFileSync(base, r.svg); size = Buffer.byteLength(r.svg); }
   else {
-    const png = await svgToPng(r.svg, maxEdge, r.w, r.h);
+    let png: Buffer;
+    try {
+      png = await svgToPng(r.svg, maxEdge, r.w, r.h);
+    } catch (e) {
+      // the WASM rasterizer can trap on exotic input: keep the SVG so the run is not lost
+      const svgFile = base.replace(/\.png$/i, '') + '.svg';
+      fs.writeFileSync(svgFile, r.svg);
+      throw new Error(`PNG rendering failed (${(e as Error).message}). The SVG was written to ${svgFile}. Try a smaller section (tree <id> --depth 1, then screenshot a child) or --no-text.`);
+    }
     fs.writeFileSync(base, png);
     size = png.length;
     const scale = Math.min(1, maxEdge / Math.max(r.w, r.h));

@@ -10,7 +10,22 @@ export function analyze(db: DatabaseSync, format: string): void {
   timed('nchild', () => db.exec(`UPDATE nodes SET nchild = (SELECT COUNT(*) FROM nodes c WHERE c.parent_id = nodes.id)
            WHERE id IN (SELECT DISTINCT parent_id FROM nodes WHERE parent_id IS NOT NULL)`));
   timed('instances', () => db.exec(`UPDATE components SET instances = (SELECT COUNT(*) FROM nodes n WHERE n.component_ref = components.id)`));
-  timed('fts', () => db.exec(`INSERT INTO nodes_fts(rowid, name, text) SELECT rowid, name, COALESCE(text,'') FROM nodes WHERE name <> '' OR text IS NOT NULL`));
+  // texts that only exist as instance property/override values ("Hello Jane Doe") must be searchable too
+  timed('stext', () => {
+    const upd = db.prepare('UPDATE nodes SET stext = ? WHERE id = ?');
+    const rows = db.prepare(`SELECT id, raw FROM nodes WHERE type = 'instance' AND raw IS NOT NULL AND (raw LIKE '%"props"%' OR raw LIKE '%"overrides"%' OR raw LIKE '%"descendants"%')`).all() as { id: string; raw: string }[];
+    for (const r of rows) {
+      let raw: any;
+      try { raw = JSON.parse(r.raw); } catch { continue; }
+      const t = new Set<string>();
+      const add = (v: unknown) => { if (typeof v === 'string' && v.trim() && v.length < 300) t.add(v.trim()); };
+      for (const v of Object.values(raw.props ?? {})) add(v);
+      for (const o of raw.overrides ?? []) { add(o.t); for (const v of Object.values(o.pa ?? {})) add(v); }
+      for (const d of Object.values<any>(raw.descendants ?? {})) add(d?.content);
+      if (t.size) upd.run([...t].join(' · ').slice(0, 600), r.id);
+    }
+  });
+  timed('fts', () => db.exec(`INSERT INTO nodes_fts(rowid, name, text) SELECT rowid, name, COALESCE(text, stext, '') FROM nodes WHERE name <> '' OR text IS NOT NULL OR stext IS NOT NULL`));
   // effective visibility: a node is only seen if it and all its ancestors are visible
   timed('evis', () => {
     db.exec(`CREATE TEMP TABLE vis(id TEXT PRIMARY KEY) WITHOUT ROWID`);

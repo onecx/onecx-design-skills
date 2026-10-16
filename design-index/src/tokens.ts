@@ -43,12 +43,15 @@ export function tokenNames(tokens: TokenRec[]): Map<string, string> {
 export const isAlias = (v: unknown): v is string => typeof v === 'string' && v.startsWith('alias:');
 
 /** Resolves aliases (alias:<id>) to a concrete value for a mode; guards against cycles. */
-export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: string, depth = 0): unknown {
+export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: string, depth = 0, modes?: string[]): unknown {
   const keys = Object.keys(t.values);
   const v = t.values[mode] ?? t.values[keys[0]];
   if (isAlias(v) && depth < 10) {
     const target = byId.get(v.slice(6));
-    return target ? resolveValue(byId, target, mode, depth + 1) : v;
+    if (!target) return v;
+    // an alias target of another collection resolves in that collection's explicit mode if the context sets one
+    const m = modes ? [...modes].reverse().find((x) => x in target.values) : undefined;
+    return resolveValue(byId, target, m ?? mode, depth + 1, modes);
   }
   return v;
 }
@@ -78,15 +81,17 @@ export class TokenIndex {
     }
   }
   private mode?: string;
-  /** Concrete color of a token (by name or id) in the default mode. */
-  colorValue(ref: string): string | undefined {
+  /** Concrete color of a token (by name or id); `modes` are explicit variable modes of the surrounding frames (outermost first). */
+  colorValue(ref: string, modes?: string[]): string | undefined {
     const t = this.byName.get(ref) ?? this.byId.get(ref);
     if (!t) return undefined;
     if (!this.mode) {
-      const modes = modesOf(this.tokens);
-      this.mode = modes.includes('default') ? 'default' : modes.find((m) => /light/i.test(m)) ?? modes[0];
+      const all = modesOf(this.tokens);
+      this.mode = all.includes('default') ? 'default' : all.find((m) => /light/i.test(m)) ?? all[0];
     }
-    const v = resolveValue(this.byId, t, this.mode);
+    // the innermost explicit mode that this variable's collection defines wins
+    const own = modes ? [...modes].reverse().find((m) => m in t.values) : undefined;
+    const v = resolveValue(this.byId, t, own ?? this.mode, 0, modes);
     return typeof v === 'string' && v.startsWith('#') ? v : undefined;
   }
   get empty(): boolean { return this.tokens.length === 0; }

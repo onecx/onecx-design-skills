@@ -83,3 +83,18 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
 - `.pen` schema 2.21 is the documented reference; other versions are read with warnings (2.18 was tested).
 - Heuristics (screen detection, purpose, flows, audit) are guesses and are always marked; they exist to produce questions, not facts.
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
+
+## Changelog
+- **0.1.1**
+  - `.fig`: instance overrides now include style changes (text color, size, weight, shared text styles, radius, opacity), "make visible" overrides and boolean visibility properties; swapped-in components are resolved.
+  - `spec` shows the content of instances (from the component, with overrides applied) and lists hidden layers and text values it could not place, so a model asks instead of guessing.
+  - `search` finds texts that only exist as instance values; `audit` reports hidden layers that contain text and slot-placeholder styling left over from a conversion.
+  - `screenshot` reports renderer failures clearly and keeps the SVG.
+  - Instance semantics ported from the MIT-licensed open-pencil `packages/fig` reference (https://github.com/open-pencil/open-pencil): overrides addressed by key paths across nested instances, structural overrides (swap) before property overrides, component properties (text, visibility, instance swap, including `symbolIdValue` assignments) with defaults and inheritance, saved derived sizes, explicit variable modes per frame. Re-implemented in `design-index/src/instances.ts`; no runtime dependency.
+  - Token resolution honours explicit variable modes (`modes{Collection=Mode}` line in `spec`).
+  - Index schema version 21: re-run `ingest --force` on existing caches.
+  - Lower peak memory for `.fig` ingest (derived geometry de-duplicated): 49 MB file 366 MB, 37 MB/186k-node file 682 MB, 830k-node stress file 1.9 GB.
+  - Project skills: bundle fonts locally, report every deliberate omission.
+  - Measured with a small model (3 runs each, same task and 41-point checklist): 0.1.0 scored 61/66/78, 0.1.1 scored 95/85/85. Small sample, indicative only.
+  - Known limits: slot-content frames and resize constraints are not implemented; "explicit swap implies visible" is a heuristic.
+- **0.1.0** initial release.

@@ -14,6 +14,7 @@ You never open the design file yourself. You ask the `design-query` command; eve
 3. A line marked `~` or "derived" is a guess. Ask the user about it. Do not treat it as fact.
 4. The user's answers (`design-decisions.md`) beat the design.
 5. Work on ONE screen at a time. Never load several screens into context.
+6. Everything you leave out on purpose (hidden layers, icons you cannot identify, variants you skip) goes into `design-progress.md` and into a question to the user. Do not silently drop it.
 
 ## Quick start (run these, in this order)
 ```
@@ -30,7 +31,7 @@ All commands except `ingest` accept `--file <path>` (default: last indexed file)
 |---|---|
 | Understand the file / ask the user questions | read `references/grill-me.md`, then follow it |
 | List screens | `screens` (or `screens --page N`) |
-| Find something by name or text | `search "<text>"` |
+| Find something by name or text (also texts that only exist as instance values) | `search "<text>"` |
 | See the structure of a frame | `tree <id> --depth 2` |
 | Everything needed to build a frame | `spec <id>` (big frame: first `tree <id> --depth 1`, then `spec` per child) |
 | CSS variables (tokens) | `tokens --format css --out <file>` (no tokens in file: add `--derive`) |
@@ -48,6 +49,8 @@ All commands except `ingest` accept `--file <path>` (default: last indexed file)
 `$name` = token, use CSS variable `var(--name)` · `(=$x?)` = same value as token x but not bound in the design ·
 `→Comp[Variant]` = component instance · `.s3` = repeated style, defined once at the top · `svg=…` = exported vector file name ·
 `@x,y` = absolute position (only inside absolutely positioned parents) · `… N children (tree <id> …)` = more below, run that command.
+`spec` shows the content of an instance below it (taken from its component, with the instance's text, style, visibility and swap overrides applied).
+Lines starting with `# hidden` / `# text value(s) not placed` list things `spec` could not show: ASK THE USER about them, never drop or invent them.
 
 ## Large designs (small context window)
 1. One screen at a time. Big screen: `tree <id> --depth 1`, then `spec <child-id>` per child; implement each child before the next.

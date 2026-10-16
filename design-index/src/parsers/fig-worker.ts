@@ -67,6 +67,8 @@ function main(): void {
   const ctx: Ctx = { imageMap: init.imageMap, usage: (k, v) => usageMap.set(k + '\u0000' + v, (usageMap.get(k + '\u0000' + v) ?? 0) + 1), warn };
   let nodes: NodeRow[] = [];
   let geomsOut: [string, string][] = [];
+  let pdefsOut: Any[] = [];
+  let derivedOut: Any[] = [];
   let inters: InteractionRow[] = [];
   let notes: NoteRow[] = [];
   const canvases: { id: string; name: string; pos: string; internal: boolean }[] = [];
@@ -76,18 +78,20 @@ function main(): void {
   const stackModes = new Map<string, string>();
   const flagged: { id: string; parent: string; grow: boolean; stretch: boolean; abs: boolean }[] = [];
   const propNames = new Map<string, string>();
+  const styleFonts: Record<string, unknown> = {};
   const stateGroups = new Map<string, { name: string; defs: Map<string, string> }>();
   const symbols: { id: string; name: string; desc: string; parent: string | null; specs: Any[]; ownDefs: Any[] }[] = [];
   const geomPending: { id: string; refs: { blob: number; rule?: string }[] }[] = [];
   const neededBlobs = new Set<number>();
+  const seenGeom = new Set<string>();
   let nNodes = 0;
   let maxHeap = 0;
 
   const flush = (force = false) => {
-    if (!force && nodes.length < 1000) return;
-    if (!nodes.length && !geomsOut.length && !inters.length && !notes.length) return;
-    send({ t: 'rows', nodes, geoms: geomsOut, inters, notes });
-    nodes = []; geomsOut = []; inters = []; notes = [];
+    if (!force && nodes.length < 1000 && derivedOut.length < 5000) return;
+    if (!nodes.length && !geomsOut.length && !inters.length && !notes.length && !pdefsOut.length && !derivedOut.length) return;
+    send({ t: 'rows', nodes, geoms: geomsOut, inters, notes, pdefs: pdefsOut, derived: derivedOut });
+    nodes = []; geomsOut = []; inters = []; notes = []; pdefsOut = []; derivedOut = [];
   };
 
   const handle = (n: Any): void => {
@@ -118,6 +122,7 @@ function main(): void {
       for (const d of n.componentPropDefs ?? []) if (d.name) m.set(guidStr(d.id)!, d.name);
       stateGroups.set(id, { name: n.name ?? '', defs: m });
     }
+    if (n.styleType === 'TEXT' && c.row.styles?.font) { styleFonts[n.key ?? id] = c.row.styles.font; styleFonts[id] = c.row.styles.font; }
     if (c.stackMode) stackModes.set(id, c.stackMode);
     if (c.childFlags && c.parent) flagged.push({ id, parent: c.parent, grow: c.childFlags.grow, stretch: c.childFlags.stretch, abs: !!c.row.layout?.abs });
     if (t === 'SYMBOL') {
@@ -125,6 +130,14 @@ function main(): void {
         id, name: n.name ?? '', desc: n.symbolDescription ?? '', parent: c.parent, specs: n.variantPropSpecs ?? [],
         ownDefs: (n.componentPropDefs ?? []).filter((d: Any) => d.type && d.type !== 'VARIANT'),
       });
+    }
+    if (c.propdefs) pdefsOut.push(...c.propdefs);
+    if (c.derived) for (const d of c.derived) {
+      const { g, ...rest } = d;
+      // identical shapes share their blobs: store each geometry once, keyed by its blob indexes
+      const key = g ? `g:${g.map((r) => r.blob).join(',')}` : null;
+      derivedOut.push({ inst: id, ...rest, geom: key });
+      if (g && key && !seenGeom.has(key)) { seenGeom.add(key); geomPending.push({ id: key, refs: g }); for (const r of g) neededBlobs.add(r.blob); }
     }
     if (c.geomRefs) { geomPending.push({ id, refs: c.geomRefs }); for (const r of c.geomRefs) neededBlobs.add(r.blob); }
     for (const pi of n.prototypeInteractions ?? []) {
@@ -138,7 +151,7 @@ function main(): void {
     if (n.description && t !== 'SYMBOL' && String(n.description).trim()) notes.push({ node_id: id, kind: 'description', text: String(n.description) });
     if ((t === 'STICKY' || t === 'SHAPE_WITH_TEXT' || t === 'CODE_BLOCK') && c.row.text) notes.push({ node_id: id, kind: t.toLowerCase(), text: c.row.text });
     nodes.push(c.row);
-    if (nodes.length >= 1000) flush();
+    if (nodes.length >= 1000 || derivedOut.length >= 5000 || pdefsOut.length >= 5000) flush(true);
     if (nNodes % 5000 === 0) {
       maxHeap = Math.max(maxHeap, process.memoryUsage().heapUsed);
       port.postMessage({ t: 'progress', frac: bb._index / dataLen, heapMB: Math.round(maxHeap / 1e6) });
@@ -252,7 +265,8 @@ function main(): void {
   const usage: [string, string, number][] = [...usageMap].map(([k, n]) => { const [a, b] = k.split('\u0000'); return [a, b, n]; });
   canvases.sort((a, b) => Number(a.internal) - Number(b.internal) || (a.pos < b.pos ? -1 : a.pos > b.pos ? 1 : 0));
   send({
-    t: 'done', canvases, variables, components, fixups, usage, warns: [...warns], propNames: Object.fromEntries(propNames),
+    t: 'done', canvases, variables, components, fixups, usage, warns: [...warns], propNames: Object.fromEntries(propNames), styleFonts,
+    varmodes: [...sets].flatMap(([sid, st]) => [...st.modes].map(([mid, mname]) => ({ set_id: sid, set_key: [...setByKey].find(([, v]) => v === sid)?.[0] ?? null, set_name: st.name, mode_id: mid, mode_name: mname }))),
     stats: { nodes: nNodes, version, uncompressedMB: Math.round(dataLen / 1e5) / 10, maxHeapMB: Math.round(Math.max(maxHeap, process.memoryUsage().heapUsed) / 1e6) },
   });
 }

@@ -114,6 +114,8 @@ export async function parseFig(opts: FigOptions): Promise<void> {
           for (const [id, d] of m.geoms) sink.geometry(id, d);
           for (const i of m.inters) sink.interaction(i);
           for (const n of m.notes) sink.note(n);
+          for (const d of m.pdefs ?? []) sink.propdef(d);
+          for (const d of m.derived ?? []) sink.derived(d);
           Atomics.add(ackArr, 0, 1); Atomics.notify(ackArr, 0);
           opts.onPeak?.(process.memoryUsage().rss);
           break;
@@ -133,6 +135,7 @@ export async function parseFig(opts: FigOptions): Promise<void> {
   sink.run(`UPDATE pages SET internal=1 WHERE id IN (${done.canvases.filter((c: any) => c.internal).map(() => '?').join(',') || "''"})`, ...done.canvases.filter((c: any) => c.internal).map((c: any) => c.id));
   for (const v of done.variables) sink.variable(v);
   for (const c of done.components) sink.component(c);
+  for (const v of done.varmodes ?? []) sink.varmode(v);
   for (const [k, v, n] of done.usage) sink.usage(k, v, n);
   for (const [msg, n] of done.warns) sink.warn(msg, n);
 
@@ -161,6 +164,23 @@ export async function parseFig(opts: FigOptions): Promise<void> {
   for (const r of inst) {
     const raw = JSON.parse(r.raw);
     if (raw.props) { raw.pid = raw.props; raw.props = Object.fromEntries(Object.entries(raw.props).map(([k, v]) => [names[k] ?? k, v])); sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id); }
+  }
+  sink.exec('COMMIT');
+
+  // overrides that point to a shared text style: copy the style's font values into the override
+  const sf = done.styleFonts as Record<string, Record<string, unknown>>;
+  const withSid = sink.query<{ id: string; raw: string }>(`SELECT id, raw FROM nodes WHERE type = 'instance' AND raw LIKE '%"sid"%'`);
+  sink.exec('BEGIN');
+  for (const r of withSid) {
+    const raw = JSON.parse(r.raw);
+    let changed = false;
+    for (const o of raw.overrides ?? []) {
+      if (!o.sid) continue;
+      const font = sf[o.sid];
+      if (font) { o.st = { ...(o.st ?? {}), font: { ...font, ...(o.st?.font ?? {}) } }; changed = true; }
+      delete o.sid;
+    }
+    if (changed) sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id);
   }
   sink.exec('COMMIT');
 

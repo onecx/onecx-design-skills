@@ -9,7 +9,7 @@ import { TokenIndex } from '../tokens.js';
 export interface NodeRec {
   id: string; parent_id: string | null; page: number; type: string; name: string; depth: number; ord: number;
   x: number | null; y: number | null; w: number | null; h: number | null; layout: string | null; styles: string | null;
-  text: string | null; component_ref: string | null; visible: number; raw: string | null; nchild: number;
+  text: string | null; component_ref: string | null; visible: number; raw: string | null; nchild: number; stext?: string | null;
 }
 
 const compCache = new WeakMap<DatabaseSync, Map<string, string>>();
@@ -55,7 +55,7 @@ export function nodeLine(db: DatabaseSync, n: NodeRec, withStyle = true): string
   return parts.join(' ');
 }
 
-const COLS = 'id,parent_id,page,type,name,depth,ord,x,y,w,h,layout,styles,text,component_ref,visible,raw,nchild';
+const COLS = 'id,parent_id,page,type,name,depth,ord,x,y,w,h,layout,styles,text,component_ref,visible,raw,nchild,stext';
 
 export function getNode(db: DatabaseSync, id: string): NodeRec | undefined {
   return db.prepare(`SELECT ${COLS} FROM nodes WHERE id=?`).get(id) as NodeRec | undefined;
@@ -165,7 +165,7 @@ export function search(db: DatabaseSync, out: Out, text: string, type: string | 
   out.head(`# ${Math.min(rows.length, limit)}${rows.length > limit ? '+' : ''} matches for "${text}"${type ? ` (${type})` : ''}`);
   for (const r of rows.slice(0, limit)) {
     const par = r.parent_id ? (db.prepare('SELECT name FROM nodes WHERE id=?').get(r.parent_id) as { name: string } | undefined)?.name : '';
-    out.add(`${nodeLine(db, r, false)}  [P${r.page}${par ? ' in ' + q(par, 30) : ''}]`, { id: r.id, type: r.type, name: r.name, page: r.page, text: r.text });
+    out.add(`${nodeLine(db, r, false)}${r.stext ? ` [instance texts: ${q(r.stext, 90)}]` : ''}  [P${r.page}${par ? ' in ' + q(par, 30) : ''}]`, { id: r.id, type: r.type, name: r.name, page: r.page, text: r.text });
   }
   if (rows.length > limit) out.hint(`More matches: --limit ${limit * 2}; or narrow down with --type.`);
   if (!rows.length) out.hint('No matches. Try another spelling or browse `screens`.');

@@ -6,6 +6,9 @@ import { openIndex } from '../src/cache.js';
 import { ingest } from '../src/ingest.js';
 import { blobToPath, variantFromName } from '../src/parsers/fig-convert.js';
 import { buildTokens } from '../src/commands/library.js';
+import { buildSpec } from '../src/commands/spec.js';
+import { Out } from '../src/output.js';
+import { search } from '../src/commands/structure.js';
 import { makePng } from './helpers/png.js';
 import { buildFig, buildZip, sampleNodes } from './helpers/fig-builder.js';
 
@@ -61,6 +64,24 @@ describe('fig ingest', () => {
     await ingest(f, { quiet: true });
     const { db } = openIndex(f);
     expect((db.prepare('SELECT msg FROM warnings').all() as any[]).some((w) => /version 999 is untested/.test(w.msg))).toBe(true);
+  });
+});
+
+describe('fig instance overrides', () => {
+  it('keeps style overrides, expands the instance in spec and finds override texts', async () => {
+    const f = path.join(tmp, 'ov.fig');
+    fs.writeFileSync(f, buildFig(sampleNodes()));
+    await ingest(f, { quiet: true });
+    const { db } = openIndex(f);
+    const raw = JSON.parse((db.prepare("SELECT raw FROM nodes WHERE id='2:2'").get() as any).raw);
+    expect(raw.overrides[0]).toMatchObject({ p: '2:3', t: 'Weiter', st: { font: { s: 20 } } });
+    const spec = buildSpec(db, '1:1', { maxTokens: 4000 }).text;
+    expect(spec).toMatch(/"Label" text .*text="Weiter" .*font=20/);
+    const o = new Out({ maxTokens: 2000, json: true });
+    search(db, o, 'Weiter', undefined, 5);
+    const w = process.stdout.write; let out = ''; (process.stdout as any).write = (x: string) => { out += x; return true; };
+    try { o.print(); } finally { process.stdout.write = w; }
+    expect(out).toContain('2:2');
   });
 });
 

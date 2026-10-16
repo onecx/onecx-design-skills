@@ -17,7 +17,16 @@ enum StackMode { NONE = 0; HORIZONTAL = 1; VERTICAL = 2; }
 message ParentIndex { GUID guid = 1; string position = 2; }
 message Paint { PaintType type = 1; Color color = 2; float opacity = 3; bool visible = 4; }
 message TextData { string characters = 1; }
-message SymbolData { GUID symbolID = 1; }
+enum PropField { VISIBLE = 0; TEXT_DATA = 1; OVERRIDDEN_SYMBOL_ID = 2; }
+message PropRef { GUID defID = 1; PropField componentPropNodeField = 2; }
+message SymbolIdValue { GUID guid = 1; }
+message PropValue { bool boolValue = 1; TextData textDataValue = 2; SymbolIdValue symbolIdValue = 3; }
+message PropAssign { GUID defID = 1; PropValue value = 2; }
+message PropDefMsg { GUID id = 1; string name = 2; PropValue initialValue = 3; GUID parentPropDefId = 4; }
+message Derived { GUIDPath guidPath = 1; Vector size = 2; Matrix transform = 3; }
+message GUIDPath { GUID[] guids = 1; }
+message OverrideEntry { GUIDPath guidPath = 1; float fontSize = 2; Paint[] fillPaints = 3; TextData textData = 4; bool visible = 5; GUID overriddenSymbolID = 6; PropAssign[] componentPropAssignments = 7; }
+message SymbolData { GUID symbolID = 1; OverrideEntry[] symbolOverrides = 2; }
 message ModeRef { GUID id = 1; string name = 2; }
 message VarValue { Color colorValue = 1; float floatValue = 2; }
 message VarData { VarValue value = 1; }
@@ -28,14 +37,21 @@ message NodeChange {
   TextData textData = 7; float fontSize = 8; StackMode stackMode = 9; float stackSpacing = 10; bool visible = 11;
   Paint[] fillPaints = 12; SymbolData symbolData = 13; ModeRef[] variableSetModes = 14; VarValues variableDataValues = 15; string key = 16;
   string symbolDescription = 17; uint[] fillGeometryBlobs = 18; SetRef variableSetID = 19; VarType variableResolvedType = 20;
+  GUID overrideKey = 21; PropDefMsg[] componentPropDefs = 22; PropRef[] componentPropRefs = 23; PropAssign[] componentPropAssignments = 24; Derived[] derivedSymbolData = 25;
 }
 message Blob { byte[] bytes = 1; }
 message Message { NodeChange[] nodeChanges = 1; Blob[] blobs = 2; }
 `;
 
+export type PV = { b: boolean } | { t: string } | { sym: [number, number] };
+export interface Assign { def: [number, number]; v: PV }
+const pv = (v: PV) => ('b' in v ? { boolValue: v.b } : 't' in v ? { textDataValue: { characters: v.t } } : { symbolIdValue: { guid: { sessionID: v.sym[0], localID: v.sym[1] } } });
+
 export interface FigNode {
   id: [number, number]; type: string; name?: string; parent?: [number, number]; pos?: string; w?: number; h?: number; x?: number; y?: number;
   text?: string; stack?: 'HORIZONTAL' | 'VERTICAL'; gap?: number; fill?: [number, number, number]; symbol?: [number, number]; desc?: string;
+  overrides?: { path: [number, number][]; fontSize?: number; fill?: [number, number, number]; text?: string; visible?: boolean; swap?: [number, number]; assign?: Assign[] }[];
+  ok?: [number, number]; defs?: { id: [number, number]; init?: PV }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number }[]; visibleFlag?: boolean;
   modes?: { id: [number, number]; name: string }[]; key?: string; setKey?: string; varType?: 'COLOR' | 'FLOAT'; values?: { mode: [number, number]; color?: [number, number, number, number]; num?: number }[];
 }
 
@@ -51,9 +67,23 @@ export function buildFig(nodes: FigNode[], opts: { version?: number } = {}): Buf
       size: n.w != null ? { x: n.w, y: n.h ?? 0 } : undefined,
       transform: { m00: 1, m01: 0, m02: n.x ?? 0, m10: 0, m11: 1, m12: n.y ?? 0 },
       textData: n.text != null ? { characters: n.text } : undefined, fontSize: n.text != null ? 16 : undefined,
-      stackMode: n.stack, stackSpacing: n.gap, visible: true,
+      stackMode: n.stack, stackSpacing: n.gap, visible: n.visibleFlag ?? true,
+      overrideKey: n.ok ? g(n.ok) : undefined,
+      componentPropDefs: n.defs?.map((d) => ({ id: g(d.id), name: 'p', initialValue: d.init ? pv(d.init) : undefined })),
+      componentPropRefs: n.refs?.map((r) => ({ defID: g(r.def), componentPropNodeField: r.field })),
+      componentPropAssignments: n.assign?.map((a) => ({ defID: g(a.def), value: pv(a.v) })),
+      derivedSymbolData: n.derived?.map((d) => ({ guidPath: { guids: d.path.map(g) }, size: { x: d.w, y: d.h }, transform: { m00: 1, m01: 0, m02: d.x, m10: 0, m11: 1, m12: d.y } })),
       fillPaints: n.fill ? [{ type: 'SOLID', color: { r: n.fill[0], g: n.fill[1], b: n.fill[2], a: 1 }, opacity: 1, visible: true }] : undefined,
-      symbolData: n.symbol ? { symbolID: g(n.symbol) } : undefined,
+      symbolData: n.symbol ? {
+        symbolID: g(n.symbol),
+        symbolOverrides: n.overrides?.map((o) => ({
+          guidPath: { guids: o.path.map(g) }, fontSize: o.fontSize, visible: o.visible,
+          overriddenSymbolID: o.swap ? g(o.swap) : undefined,
+          componentPropAssignments: o.assign?.map((a) => ({ defID: g(a.def), value: pv(a.v) })),
+          fillPaints: o.fill ? [{ type: 'SOLID', color: { r: o.fill[0], g: o.fill[1], b: o.fill[2], a: 1 }, opacity: 1, visible: true }] : undefined,
+          textData: o.text !== undefined ? { characters: o.text } : undefined,
+        })),
+      } : undefined,
       symbolDescription: n.desc, key: n.key,
       variableSetID: n.setKey ? { assetRef: { key: n.setKey } } : undefined, variableResolvedType: n.varType,
       variableSetModes: n.modes?.map((m) => ({ id: g(m.id), name: m.name })),
@@ -99,7 +129,8 @@ export const sampleNodes = (): FigNode[] => [
   { id: [1, 2], type: 'TEXT', name: 'Title', parent: [1, 1], pos: '!', w: 200, h: 24, text: 'Anmelden' },
   { id: [1, 3], type: 'TEXT', name: 'Hint', parent: [1, 1], pos: '"', w: 200, h: 24, text: 'Lorem ipsum' },
   { id: [2, 1], type: 'SYMBOL', name: 'State=Hover, Size=L', parent: [0, 1], pos: '"', w: 100, h: 40, desc: 'Primary button' },
-  { id: [2, 2], type: 'INSTANCE', name: 'Button', parent: [1, 1], pos: '#', w: 100, h: 40, symbol: [2, 1] },
+  { id: [2, 3], type: 'TEXT', name: 'Label', parent: [2, 1], pos: '!', w: 60, h: 20, text: 'Button' },
+  { id: [2, 2], type: 'INSTANCE', name: 'Button', parent: [1, 1], pos: '#', w: 100, h: 40, symbol: [2, 1], overrides: [{ path: [[2, 3]], fontSize: 20, fill: [0, 0.2, 0.4], text: 'Weiter' }] },
   { id: [3, 1], type: 'VARIABLE_SET', name: 'Colors', key: 'setkey', modes: [{ id: [9, 0], name: 'Light' }, { id: [9, 1], name: 'Dark' }] },
   { id: [3, 2], type: 'VARIABLE', name: 'brand/primary', key: 'varkey', setKey: 'setkey', varType: 'COLOR', values: [{ mode: [9, 0], color: [0, 0.2, 0.4, 1] }, { mode: [9, 1], color: [0.4, 0.6, 1, 1] }] },
 ];

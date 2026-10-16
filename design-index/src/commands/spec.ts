@@ -5,7 +5,8 @@ import type { Layout, Paint, Styles } from '../model.js';
 import { Out, layoutStr, paintStr, q, safeJson, sizeStr } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
-import { children, compLabel, requireNode, type NodeRec } from './structure.js';
+import { compLabel, requireNode, type NodeRec } from './structure.js';
+import { Evaluator, TooBig, type VNode } from '../instances.js';
 
 export const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'asset';
 
@@ -70,23 +71,17 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
   const raw = safeJson<Record<string, unknown>>(n.raw);
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
-  if (n.component_ref && raw?.descendants) head.push(`overrides=${JSON.stringify(raw.descendants).slice(0, 200)}`);
-  if (n.component_ref && raw?.props) {
-    const pr = Object.entries(raw.props as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined);
-    if (pr.length) head.push(`props={${pr.slice(0, 8).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(', ')}}`);
-  }
-  if (Array.isArray(raw?.overrides)) {
-    const ovs = raw.overrides as { t?: string; hidden?: boolean; swap?: string; pa?: Record<string, unknown> }[];
-    const texts = ovs.flatMap((o) => [o.t, ...Object.values(o.pa ?? {})]).filter((v): v is string => typeof v === 'string' && v.length > 0);
-    const hid = ovs.filter((o) => o.hidden).length;
-    const sw = ovs.filter((o) => o.swap).length;
-    const bits = [texts.length ? `texts=${JSON.stringify([...new Set(texts)].slice(0, 6).map((t) => t.slice(0, 32)))}` : '', hid ? `hidden=${hid}` : '', sw ? `swaps=${sw}` : ''].filter(Boolean);
-    if (bits.length) head.push(`overrides{${bits.join(' ')}}`);
-  }
   if (geomLen || VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n)}`);
   if (!n.visible) head.push('(hidden)');
   const style = [...styleParts(c, n, s), fontStr(s)].filter(Boolean).join(' ');
   return { head: head.join(' '), style };
+}
+
+/** Property values of an instance, shown only where its content is not expanded below it. */
+function propsOf(n: NodeRec): string {
+  const raw = safeJson<Record<string, unknown>>(n.raw);
+  const pr = Object.entries((raw?.props as Record<string, unknown> | undefined) ?? {}).filter(([, v]) => typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number');
+  return pr.length ? ` props={${pr.slice(0, 8).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(', ')}}` : '';
 }
 
 export interface SpecResult { text: string; nodes: number; tokens: number; truncated: boolean; classes: number }
@@ -102,24 +97,35 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
   const cap = Number.isFinite(opts.maxTokens) ? Math.ceil(opts.maxTokens / 5) + 20 : Infinity;
   const TOO_BIG = new Error('spec too big for budget');
   const render = (maxDepth: number): SpecResult => {
-    interface Item { n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; hidden?: number }
+    interface Item { n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; note?: string; modes?: string[] }
     const items: Item[] = [];
+    const hiddenInfo: { id: string; name: string }[] = [];
     let hiddenSkipped = 0;
-    const walk = (n: NodeRec, d: number, parent: NodeRec | null) => {
-      if (items.length > cap) throw TOO_BIG;
-      items.push({ n, d, parent, parentAbs: parent ? parentIsAbs(parent) : true });
-      if (!n.nchild) return;
-      if (d >= maxDepth) { items[items.length - 1].more = n.nchild; return; }
-      for (const k of children(db, n.id)) {
-        if (!k.visible && !c.includeHidden) { hiddenSkipped++; continue; }
-        walk(k, d + 1, n);
-      }
-    };
+    const unplaced: { id: string; name: string; texts: string[] }[] = [];
+    const ev = new Evaluator(db, { maxDepth, cap: Number.isFinite(cap) ? cap * 12 : 400000 });
+    let tree: VNode;
+    try { tree = ev.build(root); } catch (e) { if (e instanceof TooBig) throw TOO_BIG; throw e; }
     const parentIsAbs = (p: NodeRec): boolean => {
       const l = safeJson<Layout>(p.layout);
       return p.type === 'group' || !l?.dir;
     };
-    walk(root, 0, null);
+    const walk = (v: VNode, d: number, parent: NodeRec | null): void => {
+      if (items.length > cap) throw TOO_BIG;
+      if (v.hidden && !c.includeHidden) {
+        hiddenSkipped++;
+        if (hiddenInfo.length < 8) hiddenInfo.push({ id: v.row.id, name: v.row.name });
+        return;
+      }
+      const slotLike = v.isInstance && v.kids.length > 0 && /^slot\b/i.test(compLabel(db, v.row.component_ref));
+      items.push({
+        n: v.row, d, parent, parentAbs: parent ? parentIsAbs(parent) : true, more: v.truncated, modes: v.modes,
+        note: slotLike ? 'slot placeholder: its default content ("Slot component …") is editor decoration, not UI; the real content is given by "text value(s) not placed" below' : undefined,
+      });
+      if (v.unplaced?.length) unplaced.push({ id: v.row.id, name: v.row.name, texts: v.unplaced });
+      if (slotLike) return;
+      for (const k of v.kids) walk(k, d + 1, v.row);
+    };
+    walk(tree, 0, null);
 
     // repeated style strings become classes, referenced once per node
     const lines = items.map((it) => lineFor(c, it.n, it.parent, it.parent ? parentIsAbs(it.parent) : true, undefined));
@@ -134,6 +140,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       ? '# no design tokens in the file: take values (hex, px) as constants/variables from tokens.css, do not invent them'
       : '# $name = CSS variable var(--name) from `tokens`; "(=$x?)" = value equals token x but is not bound in the file (please verify)');
     out.push('# Sizes: fill=fills parent, hug=fits content, number=fixed · @x,y only inside absolutely positioned parents · row/col = flex direction');
+    if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`)');
     if (classes.size) {
       out.push('# Classes (repeated styles):');
       for (const [st, cl] of classes) out.push(`#   ${cl}: ${st}`);
@@ -141,9 +148,21 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     items.forEach((it, i) => {
       const { head, style } = lines[i];
       const cl = classes.get(style);
-      out.push(`${'  '.repeat(it.d)}${head}${style ? ' ' + (cl ?? style) : ''}${it.more ? `  … ${it.more} children (spec ${it.n.id})` : ''}`);
+      const props = it.more && it.n.component_ref ? propsOf(it.n) : '';
+      out.push(`${'  '.repeat(it.d)}${head}${it.modes ? ` modes{${it.modes.join(',')}}` : ''}${style ? ' ' + (cl ?? style) : ''}${props}${it.more ? `  … ${it.more} children (spec ${it.n.id})` : ''}`);
+      if (it.note) out.push(`${'  '.repeat(it.d + 1)}# ${it.note}`);
     });
-    if (hiddenSkipped) out.push(`# ${hiddenSkipped} hidden nodes omitted (--include-hidden)`);
+    if (hiddenSkipped) {
+      const textOf = db.prepare(`WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id=t.id) SELECT n.text FROM t CROSS JOIN nodes n ON n.id=t.id WHERE n.type='text' AND n.text IS NOT NULL LIMIT 1`);
+      out.push(`# ${hiddenSkipped} hidden node(s) omitted (--include-hidden shows them). Ask the user whether they are intended, do not guess:`);
+      for (const h of hiddenInfo.slice(0, 6)) {
+        const tx = (textOf.get(h.id) as { text: string } | undefined)?.text;
+        out.push(`#   hidden ${h.id} ${q(h.name, 40)}${tx ? ` contains text ${q(tx, 40)}` : ''}`);
+      }
+    }
+    for (const u of unplaced.slice(0, 6)) {
+      out.push(`# text value(s) not placed: ${u.texts.slice(0, 4).map((t) => q(t, 40)).join(', ')} belong to instance ${u.id} ${q(u.name, 30)}, but its component has no text field for them (slot content / instance swap). Do not drop or invent: place them where the design shows them and ask if unsure`);
+    }
     const text = out.join('\n');
     return { text, nodes: items.length, tokens: estTokens(text) + out.length, truncated: items.some((i) => i.more), classes: classes.size };
   };

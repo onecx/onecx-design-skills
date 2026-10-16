@@ -85,6 +85,9 @@ export interface VariableRow {
   guid?: string;
 }
 
+export interface PropDefRow { owner: string; id: string; name: string; type: string; initial: unknown; parent: string | null }
+export interface DerivedRow { inst: string; p: string; w?: number; h?: number; x?: number; y?: number; geom?: string | null }
+export interface VarModeRow { set_id: string; set_key: string | null; set_name: string; mode_id: string; mode_name: string }
 export interface AssetRow { hash: string; path: string; mime: string; size: number; w?: number; h?: number }
 export interface InteractionRow { node_id: string; trigger: string; action: string; target_id?: string | null; detail?: string | null }
 export interface NoteRow { node_id: string | null; kind: string; text: string }
@@ -103,6 +106,9 @@ export interface Sink {
   warn(msg: string, n?: number): void;
   /** aggregate usage of raw style values (color/fontSize/gap/...) for the audit */
   usage(kind: string, value: string, n?: number): void;
+  propdef(r: PropDefRow): void;
+  derived(r: DerivedRow): void;
+  varmode(r: VarModeRow): void;
   exec(sql: string): void;
   query<T = unknown>(sql: string, ...a: any[]): T[];
   run(sql: string, ...a: any[]): void;

@@ -8,6 +8,7 @@ import type { DatabaseSync } from './sqlite.js';
 import type { Layout, Paint, Styles } from './model.js';
 import { safeJson } from './output.js';
 import { TokenIndex } from './tokens.js';
+import { Evaluator, TooBig, type VNode } from './instances.js';
 
 interface Row {
   id: string; parent_id: string | null; type: string; name: string; depth: number; ord: number;
@@ -17,6 +18,8 @@ interface Row {
 interface R {
   row: Row; l: Layout; s: Styles; raw: Record<string, any>; kids: R[];
   x: number; y: number; w: number; h: number; lines?: string[]; geom?: string; solved?: boolean; text?: string | null; hide?: boolean;
+  /** explicit variable modes in effect (mode names, outermost first) */
+  modes?: string[];
 }
 
 export interface RenderResult { svg: string; w: number; h: number; notes: string[]; nodes: number }
@@ -93,113 +96,31 @@ export function pathBounds(d: string): { x: number; y: number; w: number; h: num
 export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): RenderResult {
   const notes = new Set<string>();
   const tokens = new TokenIndex(db);
-  const rows = db.prepare(`WITH RECURSIVE t(id) AS (SELECT id FROM nodes WHERE id=? UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id=t.id)
-    SELECT n.id,n.parent_id,n.type,n.name,n.depth,n.ord,n.x,n.y,n.w,n.h,n.layout,n.styles,n.text,n.component_ref,n.visible,n.raw FROM t CROSS JOIN nodes n ON n.id=t.id ORDER BY n.depth, n.ord`).all(id) as unknown as Row[];
-  if (!rows.length) throw new Error(`Node "${id}" not found.`);
   const max = opts.maxNodes ?? 40000;
-  const use = rows.slice(0, max);
-  if (rows.length > max) notes.add(`${rows.length - max} nodes not rendered (limit)`);
-  const map = new Map<string, R>();
-  for (const row of use) {
-    map.set(row.id, { row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0 });
-  }
+  // instances are expanded by the shared evaluator (component + bindings + overrides + saved layout), not here
+  const ev = new Evaluator(db, { maxDepth: 99, cap: max * 4 });
+  const rootRow = ev.node(id);
+  if (!rootRow) throw new Error(`Node "${id}" not found.`);
+  let vtree: VNode;
+  try { vtree = ev.build(rootRow); } catch (e) { if (e instanceof TooBig) throw new Error(`Frame too large to render (> ${max * 4} nodes): render a smaller section.`); throw e; }
   const geoms = new Map<string, string>();
-  const ids = use.map((r) => r.id);
-  for (let i = 0; i < ids.length; i += 500) {
-    const chunk = ids.slice(i, i + 500);
-    for (const g of db.prepare(`SELECT node_id,data FROM geometry WHERE node_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as { node_id: string; data: string }[]) geoms.set(g.node_id, g.data);
-  }
-  const root = map.get(id)!;
-  for (const r of map.values()) { const p = r.row.parent_id ? map.get(r.row.parent_id) : undefined; if (p && r !== root) p.kids.push(r); }
-  for (const r of map.values()) r.kids = r.kids.filter((k) => k.row.visible);
+  const qGeom = db.prepare('SELECT data FROM geometry WHERE node_id=?');
+  let nNodes = 0;
+  const toR = (v: VNode, inherited: string[] = []): R => {
+    nNodes++;
+    const modes = v.modes ? [...inherited, ...v.modes.map((m) => m.split('=').slice(1).join('='))] : inherited;
+    const row = v.row as unknown as Row;
+    const r: R = { row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0, modes };
+    if (row.type === 'path' || row.type === 'boolean') { const g = qGeom.get(v.geomKey ?? row.id) as { data: string } | undefined; if (g) geoms.set(row.id + (v.geomKey ?? ''), g.data); if (v.geomKey) r.geom = v.geomKey; }
+    r.kids = v.kids.filter((k) => !k.hidden).map((k) => toR(k, modes));
+    return r;
+  };
+  const root = toR(vtree);
+  const use = { length: nNodes };
+  if (opts.format === 'fig' && nNodes > 1) notes.add('Instances expanded from their component (component properties, overrides, swaps and saved layout applied)');
 
   const assets = new Map<string, { path: string; mime: string }>();
   for (const a of db.prepare('SELECT hash,path,mime FROM assets').all() as { hash: string; path: string; mime: string }[]) assets.set(a.hash, a);
-
-  // ---- expand instances from their component (fig stores no children for instances; pen `ref` neither) ----
-  const SUB = `WITH RECURSIVE t(id) AS (SELECT id FROM nodes WHERE id=? UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id=t.id)
-    SELECT n.id,n.parent_id,n.type,n.name,n.depth,n.ord,n.x,n.y,n.w,n.h,n.layout,n.styles,n.text,n.component_ref,n.visible,n.raw FROM t CROSS JOIN nodes n ON n.id=t.id ORDER BY n.depth, n.ord`;
-  const compRows = new Map<string, Row[]>();
-  let budget = Math.max(0, max - use.length);
-  const mk = (row: Row): R => ({ row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0 });
-  function loadGeomsFor(rowsIn: Row[]): void {
-    const need = rowsIn.map((r) => r.id).filter((i) => !geoms.has(i));
-    for (let i = 0; i < need.length; i += 500) {
-      const chunk = need.slice(i, i + 500);
-      for (const g of db.prepare(`SELECT node_id,data FROM geometry WHERE node_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as { node_id: string; data: string }[]) geoms.set(g.node_id, g.data);
-    }
-  }
-  type Ov = { p: string; t?: string; hidden?: boolean; swap?: string; pa?: Record<string, unknown> };
-  function expand(r: R, depth: number): void {
-    // an instance-level swap (override without path) replaces the component before expansion
-    const ovs = (r.raw.overrides as Ov[] | undefined) ?? [];
-    const selfSwap = ovs.find((o) => !o.p && o.swap);
-    const ref = selfSwap?.swap ?? r.row.component_ref;
-    if (r.row.type === 'instance' && !r.kids.length && ref && depth < 5 && budget > 0) {
-      let rowsC = compRows.get(ref);
-      if (!rowsC) { rowsC = db.prepare(SUB).all(ref) as unknown as Row[]; compRows.set(ref, rowsC); loadGeomsFor(rowsC); }
-      if (rowsC.length && budget >= rowsC.length) {
-        budget -= rowsC.length;
-        const copies = new Map<string, R>(rowsC.map((row) => [row.id, mk(row)]));
-        const top = copies.get(ref)!;
-        for (const c of copies.values()) { const p = c.row.parent_id ? copies.get(c.row.parent_id) : undefined; if (p && c !== top && c.row.visible) p.kids.push(c); }
-        if (opts.format === 'pen') {
-          r.l = { ...top.l, ...r.l };
-          r.s = { ...top.s, ...r.s };
-          if (r.row.w == null && top.row.w != null) r.l = { ...r.l, w: r.l.w ?? top.l.w ?? top.row.w };
-          if (r.row.h == null && top.row.h != null) r.l = { ...r.l, h: r.l.h ?? top.l.h ?? top.row.h };
-          if (r.row.w == null && typeof top.row.w === 'number' && !r.l.w) r.w = top.row.w;
-        }
-        if (!r.w && top.row.w) r.w = top.row.w;
-        if (!r.h && top.row.h) r.h = top.row.h;
-        r.kids = top.kids;
-        for (const o of ovs) if (!o.p && o.pa) r.raw = { ...r.raw, pid: { ...(r.raw.pid as object | undefined), ...o.pa } };
-        applyOverrides(r);
-        for (const k of r.kids) expand(k, depth + 1);
-        applyOverrides(r);
-        return;
-      }
-    }
-    for (const k of r.kids) expand(k, depth + 1);
-  }
-  /** property assignments, text/visibility overrides and instance swaps for the subtree below instance r */
-  function applyOverrides(r: R): void {
-    const all = new Map<string, R[]>();
-    const index = (n: R): void => {
-      for (const key of new Set([n.row.id, n.raw.ok as string | undefined])) if (key) (all.get(key) ?? all.set(key, []).get(key)!).push(n);
-      n.kids.forEach(index);
-    };
-    r.kids.forEach(index);
-    const pid = r.raw.pid as Record<string, unknown> | undefined;
-    if (pid) {
-      for (const list of all.values()) for (const n of list) {
-        const tr = n.raw.textRef as string | undefined, vr = n.raw.visRef as string | undefined;
-        if (tr && typeof pid[tr] === 'string') n.text = pid[tr] as string;
-        if (vr && pid[vr] === false) n.hide = true;
-      }
-    }
-    for (const o of (r.raw.overrides as Ov[] | undefined) ?? []) {
-      if (!o.p) continue;
-      for (const target of all.get(o.p.split('/').pop()!) ?? []) {
-        if (o.t !== undefined) target.text = o.t;
-        if (o.hidden) target.hide = true;
-        if (o.swap && target.row.type === 'instance' && !target.kids.length) target.raw = { ...target.raw, overrides: [...((target.raw.overrides as Ov[]) ?? []), { p: '', swap: o.swap }] };
-        if (o.pa) target.raw = { ...target.raw, pid: { ...(target.raw.pid as object | undefined), ...o.pa } };
-      }
-    }
-    for (const [k, v] of Object.entries((r.raw.descendants as Record<string, any> | undefined) ?? {})) {
-      for (const target of all.get(k.split('/').pop()!) ?? []) {
-        if (!v || typeof v !== 'object' || v.type) continue;
-        if (typeof v.content === 'string') target.text = v.content;
-        if (v.enabled === false) target.hide = true;
-        if (typeof v.fill === 'string') target.s = { ...target.s, fill: [v.fill.startsWith('$') ? { k: 'solid', v: v.fill.slice(1) } : { k: 'solid', c: v.fill.toLowerCase() }] };
-      }
-    }
-    const prune = (n: R): void => { n.kids = n.kids.filter((k) => !k.hide); n.kids.forEach(prune); };
-    prune(r);
-  }
-  expand(root, 0);
-  if (opts.format === 'fig') notes.add('Instances expanded from their component (resizing/variant overrides only partially applied)');
 
   // ---- layout (pen only: fig stores computed boxes) ----
   const solveLayout = opts.format === 'pen';
@@ -327,8 +248,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   const out: string[] = [];
   const fonts = new Set<string>();
 
+  let curModes: string[] | undefined;
   const colorOf = (p: Paint & { k: 'solid' }): { c: string; o: number } | undefined => {
-    let c = p.c ?? (p.v ? tokens.colorValue(p.v) : undefined);
+    let c = (p.v ? tokens.colorValue(p.v, curModes) : undefined) ?? p.c;
     if (!c) { if (p.v) notes.add(`Token $${p.v} has no color value`); return undefined; }
     let o = 1;
     if (/^#[0-9a-f]{8}$/i.test(c)) { o = parseInt(c.slice(7, 9), 16) / 255; c = c.slice(0, 7); }
@@ -443,6 +365,11 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   }
 
   function emit(r: R, depth: number): void {
+    const prevModes = curModes;
+    if (r.modes) curModes = r.modes;
+    try { emitNode(r, depth); } finally { curModes = prevModes; }
+  }
+  function emitNode(r: R, depth: number): void {
     const t = r.row.type;
     if (t === 'note') return;
     const w = r.w, h = r.h;
@@ -475,7 +402,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     switch (t) {
       case 'text': out.push(textSvg(r)); break;
       case 'path': case 'boolean': {
-        const d = geoms.get(r.row.id);
+        const d = geoms.get(r.row.id + (r.geom ?? ''));
         if (d) {
           const vb = r.raw.viewBox as number[] | undefined;
           const b = vb ? { x: vb[0], y: vb[1], w: vb[2], h: vb[3] } : pathBounds(d);
