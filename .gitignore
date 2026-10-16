@@ -1,0 +1,7 @@
+dist/
+.design-index/
+.claude/
+e2e/
+*.log
+node_modules/
+release/

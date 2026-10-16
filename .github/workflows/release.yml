@@ -1,0 +1,97 @@
+name: Release
+
+# Publishes the design-index skill and the React/Angular project skills.
+#   - push a tag like v0.2.0 (must match "version" in design-index/package.json) -> build, test, GitHub release
+#   - manual run (workflow_dispatch) -> build and test only, artifacts are attached to the run (no release)
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: design-index
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: design-index/package-lock.json
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must match package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "v${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${{ steps.ver.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Install (clean, lockfile only)
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test (builds first)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test the built CLI
+        run: node dist/cli.js doctor
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          OUT="$GITHUB_WORKSPACE/release"
+          rm -rf "$OUT" && mkdir -p "$OUT/design-index/references"
+          # the skill needs nothing but Node at runtime: ship SKILL.md, references and the self-contained dist/
+          cp -r dist package.json SKILL.md "$OUT/design-index/"
+          cp references/*.md "$OUT/design-index/references/"
+          tar -C "$OUT" -czf "$OUT/design-index-$V.tar.gz" design-index
+          for fw in react angular; do
+            tar -C "$GITHUB_WORKSPACE/project-skills/$fw" -czf "$OUT/implement-design-$fw-$V.tar.gz" implement-design
+          done
+          rm -rf "$OUT/design-index"
+          cd "$OUT" && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
+      - name: Verify the packaged skill runs on its own (no node_modules)
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          T="$(mktemp -d)"
+          tar -C "$T" -xzf "$GITHUB_WORKSPACE/release/design-index-$V.tar.gz"
+          node "$T/design-index/dist/cli.js" doctor
+          rm -rf "$T"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: design-skills-${{ steps.ver.outputs.version }}
+          path: release/*
+          if-no-files-found: error
+
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

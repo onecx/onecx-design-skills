@@ -1,0 +1,17 @@
+{
+  "$comment": "Design component -> code component. Key = design component (set) name as shown by `design-query components`. Fill it while implementing; reuse existing code components, never rebuild them. Remove the _example entry once real entries exist.",
+  "version": 1,
+  "components": {
+    "_example Button": {
+      "designId": "196:1541",
+      "code": { "name": "Button", "import": "@/components/Button", "file": "src/components/Button.tsx" },
+      "props": {
+        "Style": { "prop": "variant", "values": { "Primary": "primary", "Secondary": "secondary", "Ghost": "ghost" } },
+        "Size": { "prop": "size", "values": { "Small": "sm", "Medium": "md", "Large": "lg" } },
+        "State=Disabled": { "prop": "disabled", "value": true },
+        "Button text": { "prop": "label" }
+      },
+      "notes": "State=Hover/Focus/Active are CSS states, not props."
+    }
+  }
+}
