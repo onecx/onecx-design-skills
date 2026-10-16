@@ -1,6 +1,6 @@
 {
   "name": "design-index",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Streaming indexer and query CLI for large .pen / .fig design files",
   "scripts": {
     "build": "tsup",

@@ -6,25 +6,35 @@ import { Out, layoutStr, paintStr, q, safeJson, sizeStr } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
 import { compLabel, requireNode, type NodeRec } from './structure.js';
+import { createHash } from 'node:crypto';
 import { Evaluator, TooBig, type VNode } from '../instances.js';
 
 export const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'asset';
 
 /** File name used for exported vector/raster assets so `spec` and `assets export` agree. */
-export const svgName = (n: { id: string; name: string }): string => `${slug(n.name)}-${n.id}.svg`;
+export const svgName = (n: { id: string; name: string; styles?: string | null }, geomKey?: string): string => {
+  // a vector inside an instance carries its own saved geometry (and fill): the file name must tell occurrences apart
+  const h = geomKey ? '-' + createHash('sha1').update(geomKey + '|' + (n.styles ?? '')).digest('hex').slice(0, 6) : '';
+  return `${slug(n.name)}-${n.id}${h}.svg`;
+};
 
 const VECTOR_TYPES = new Set(['path', 'line', 'polygon', 'ellipse', 'boolean']);
 
 interface Ctx { db: DatabaseSync; tokens: TokenIndex; assets: Map<string, { path: string; mime: string }>; includeHidden: boolean }
 
-function paintsSpec(c: Ctx, ps: Paint[] | undefined): string {
+function paintsSpec(c: Ctx, ps: Paint[] | undefined, modes?: string[]): string {
   if (!ps?.length) return '';
   return ps.map((p) => {
     if (p.k === 'solid' && !p.v && p.c) {
       const t = c.tokens.hexMatch(p.c);
       return t ? `${p.c}(=$${t}?)` : p.c;
     }
-    if (p.k === 'solid' && p.v) return `$${c.tokens.nameFor(p.v)}`;
+    if (p.k === 'solid' && p.v) {
+      // under explicit variable modes (e.g. Theme) the token can have another value than in the default CSS: state it
+      let eff = '';
+      if (modes?.length) { const a = c.tokens.colorValue(p.v, modes), b = c.tokens.colorValue(p.v); if (a && a !== b) eff = `{${a}}`; }
+      return `$${c.tokens.nameFor(p.v)}${eff}`;
+    }
     if (p.k === 'img') {
       const a = p.asset ? c.assets.get(p.asset) : undefined;
       return a ? `img(${a.path}${p.mode && p.mode !== 'cover' ? ',' + p.mode : ''})` : `img(missing:${p.url ?? '?'})`;
@@ -33,12 +43,12 @@ function paintsSpec(c: Ctx, ps: Paint[] | undefined): string {
   }).join('+');
 }
 
-function styleParts(c: Ctx, n: NodeRec, s: Styles | null): string[] {
+function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): string[] {
   const p: string[] = [];
   if (!s) return p;
   const isText = n.type === 'text';
-  if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill)}`);
-  if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}`);
+  if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill, modes)}`);
+  if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints, modes)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}`);
   if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
   if (s.op != null) p.push(`op=${s.op}`);
   if (s.clip) p.push('clip');
@@ -55,7 +65,7 @@ function fontStr(s: Styles | null): string {
     f.ls != null ? `ls${typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : f.ls}` : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
 }
 
-function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean, geomLen: number | undefined): { head: string; style: string } {
+function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean, geomKey: string | undefined, modes?: string[]): { head: string; style: string } {
   const l = safeJson<Layout>(n.layout);
   const s = safeJson<Styles>(n.styles);
   const head: string[] = [q(n.name, 50), n.type];
@@ -71,9 +81,9 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
   const raw = safeJson<Record<string, unknown>>(n.raw);
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
-  if (geomLen || VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n)}`);
+  if (VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n, geomKey)}`);
   if (!n.visible) head.push('(hidden)');
-  const style = [...styleParts(c, n, s), fontStr(s)].filter(Boolean).join(' ');
+  const style = [...styleParts(c, n, s, modes), fontStr(s)].filter(Boolean).join(' ');
   return { head: head.join(' '), style };
 }
 
@@ -97,7 +107,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
   const cap = Number.isFinite(opts.maxTokens) ? Math.ceil(opts.maxTokens / 5) + 20 : Infinity;
   const TOO_BIG = new Error('spec too big for budget');
   const render = (maxDepth: number): SpecResult => {
-    interface Item { n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; note?: string; modes?: string[] }
+    interface Item { eff?: string[]; geomKey?: string; n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; note?: string; modes?: string[] }
     const items: Item[] = [];
     const hiddenInfo: { id: string; name: string }[] = [];
     let hiddenSkipped = 0;
@@ -109,7 +119,8 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       const l = safeJson<Layout>(p.layout);
       return p.type === 'group' || !l?.dir;
     };
-    const walk = (v: VNode, d: number, parent: NodeRec | null): void => {
+    const walk = (v: VNode, d: number, parent: NodeRec | null, inh: string[] = []): void => {
+      const eff = v.modes ? [...inh, ...v.modes.map((m) => m.split('=').slice(1).join('='))] : inh;
       if (items.length > cap) throw TOO_BIG;
       if (v.hidden && !c.includeHidden) {
         hiddenSkipped++;
@@ -118,17 +129,17 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       }
       const slotLike = v.isInstance && v.kids.length > 0 && /^slot\b/i.test(compLabel(db, v.row.component_ref));
       items.push({
-        n: v.row, d, parent, parentAbs: parent ? parentIsAbs(parent) : true, more: v.truncated, modes: v.modes,
+        eff, geomKey: v.geomKey, n: v.row, d, parent, parentAbs: parent ? parentIsAbs(parent) : true, more: v.truncated, modes: v.modes,
         note: slotLike ? 'slot placeholder: its default content ("Slot component …") is editor decoration, not UI; the real content is given by "text value(s) not placed" below' : undefined,
       });
       if (v.unplaced?.length) unplaced.push({ id: v.row.id, name: v.row.name, texts: v.unplaced });
       if (slotLike) return;
-      for (const k of v.kids) walk(k, d + 1, v.row);
+      for (const k of v.kids) walk(k, d + 1, v.row, eff);
     };
     walk(tree, 0, null);
 
     // repeated style strings become classes, referenced once per node
-    const lines = items.map((it) => lineFor(c, it.n, it.parent, it.parent ? parentIsAbs(it.parent) : true, undefined));
+    const lines = items.map((it) => lineFor(c, it.n, it.parent, it.parent ? parentIsAbs(it.parent) : true, it.geomKey, it.eff));
     const freq = new Map<string, number>();
     for (const l of lines) if (l.style.length > 24) freq.set(l.style, (freq.get(l.style) ?? 0) + 1);
     const classes = new Map<string, string>();

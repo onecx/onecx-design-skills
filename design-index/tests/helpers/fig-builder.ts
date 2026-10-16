@@ -23,7 +23,8 @@ message SymbolIdValue { GUID guid = 1; }
 message PropValue { bool boolValue = 1; TextData textDataValue = 2; SymbolIdValue symbolIdValue = 3; }
 message PropAssign { GUID defID = 1; PropValue value = 2; }
 message PropDefMsg { GUID id = 1; string name = 2; PropValue initialValue = 3; GUID parentPropDefId = 4; }
-message Derived { GUIDPath guidPath = 1; Vector size = 2; Matrix transform = 3; }
+message Geom { uint commandsBlob = 1; }
+message Derived { GUIDPath guidPath = 1; Vector size = 2; Matrix transform = 3; Geom[] strokeGeometry = 4; }
 message GUIDPath { GUID[] guids = 1; }
 message OverrideEntry { GUIDPath guidPath = 1; float fontSize = 2; Paint[] fillPaints = 3; TextData textData = 4; bool visible = 5; GUID overriddenSymbolID = 6; PropAssign[] componentPropAssignments = 7; }
 message SymbolData { GUID symbolID = 1; OverrideEntry[] symbolOverrides = 2; }
@@ -38,6 +39,7 @@ message NodeChange {
   Paint[] fillPaints = 12; SymbolData symbolData = 13; ModeRef[] variableSetModes = 14; VarValues variableDataValues = 15; string key = 16;
   string symbolDescription = 17; uint[] fillGeometryBlobs = 18; SetRef variableSetID = 19; VarType variableResolvedType = 20;
   GUID overrideKey = 21; PropDefMsg[] componentPropDefs = 22; PropRef[] componentPropRefs = 23; PropAssign[] componentPropAssignments = 24; Derived[] derivedSymbolData = 25;
+  float cornerRadius = 26; float rectangleTopLeftCornerRadius = 27; bool rectangleCornerRadiiIndependent = 28; float strokeWeight = 29; float borderTopWeight = 30; bool borderStrokeWeightsIndependent = 31; Paint[] strokePaints = 32;
 }
 message Blob { byte[] bytes = 1; }
 message Message { NodeChange[] nodeChanges = 1; Blob[] blobs = 2; }
@@ -51,7 +53,8 @@ export interface FigNode {
   id: [number, number]; type: string; name?: string; parent?: [number, number]; pos?: string; w?: number; h?: number; x?: number; y?: number;
   text?: string; stack?: 'HORIZONTAL' | 'VERTICAL'; gap?: number; fill?: [number, number, number]; symbol?: [number, number]; desc?: string;
   overrides?: { path: [number, number][]; fontSize?: number; fill?: [number, number, number]; text?: string; visible?: boolean; swap?: [number, number]; assign?: Assign[] }[];
-  ok?: [number, number]; defs?: { id: [number, number]; init?: PV }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number }[]; visibleFlag?: boolean;
+  ok?: [number, number]; defs?: { id: [number, number]; init?: PV }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number; noStroke?: boolean }[];
+  radius?: { cornerRadius?: number; tl?: number; indep?: boolean }; stroke?: { w: number; top?: number; indep?: boolean }; visibleFlag?: boolean;
   modes?: { id: [number, number]; name: string }[]; key?: string; setKey?: string; varType?: 'COLOR' | 'FLOAT'; values?: { mode: [number, number]; color?: [number, number, number, number]; num?: number }[];
 }
 
@@ -72,7 +75,10 @@ export function buildFig(nodes: FigNode[], opts: { version?: number } = {}): Buf
       componentPropDefs: n.defs?.map((d) => ({ id: g(d.id), name: 'p', initialValue: d.init ? pv(d.init) : undefined })),
       componentPropRefs: n.refs?.map((r) => ({ defID: g(r.def), componentPropNodeField: r.field })),
       componentPropAssignments: n.assign?.map((a) => ({ defID: g(a.def), value: pv(a.v) })),
-      derivedSymbolData: n.derived?.map((d) => ({ guidPath: { guids: d.path.map(g) }, size: { x: d.w, y: d.h }, transform: { m00: 1, m01: 0, m02: d.x, m10: 0, m11: 1, m12: d.y } })),
+      derivedSymbolData: n.derived?.map((d) => ({ guidPath: { guids: d.path.map(g) }, size: { x: d.w, y: d.h }, transform: { m00: 1, m01: 0, m02: d.x, m10: 0, m11: 1, m12: d.y }, strokeGeometry: d.noStroke ? [] : undefined })),
+      cornerRadius: n.radius?.cornerRadius, rectangleTopLeftCornerRadius: n.radius?.tl, rectangleCornerRadiiIndependent: n.radius?.indep,
+      strokeWeight: n.stroke?.w, borderTopWeight: n.stroke?.top, borderStrokeWeightsIndependent: n.stroke?.indep,
+      strokePaints: n.stroke ? [{ type: 'SOLID', color: { r: 0.5, g: 0.5, b: 0.5, a: 1 }, opacity: 1, visible: true }] : undefined,
       fillPaints: n.fill ? [{ type: 'SOLID', color: { r: n.fill[0], g: n.fill[1], b: n.fill[2], a: 1 }, opacity: 1, visible: true }] : undefined,
       symbolData: n.symbol ? {
         symbolID: g(n.symbol),

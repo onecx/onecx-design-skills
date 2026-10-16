@@ -58,7 +58,7 @@ export class Evaluator {
   private kidsC = new Map<string, NodeRec[]>();
   private staticC = new Map<string, Map<string, { top: string; direct: boolean }>>();
   private defsC = new Map<string, Bindings>();
-  private derivedC = new Map<string, { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null }[]>();
+  private derivedC = new Map<string, { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[]>();
   private modeNames = new Map<string, string>();
   private setNames = new Map<string, string>();
   private count = 0;
@@ -73,7 +73,7 @@ export class Evaluator {
     this.qKids = db.prepare(`SELECT ${COLS} FROM nodes WHERE parent_id=? ORDER BY ord`);
     this.qDefs = db.prepare('SELECT id, initial, parent FROM propdefs WHERE owner=?');
     this.qDef = db.prepare('SELECT initial, parent FROM propdefs WHERE id=? LIMIT 1');
-    this.qDerived = db.prepare('SELECT p,w,h,x,y,geom FROM derived WHERE inst=?');
+    this.qDerived = db.prepare('SELECT p,w,h,x,y,geom,ns FROM derived WHERE inst=?');
     for (const m of db.prepare('SELECT set_id,set_key,set_name,mode_id,mode_name FROM varmodes').all() as { set_id: string; set_key: string | null; set_name: string; mode_id: string; mode_name: string }[]) {
       this.modeNames.set(m.mode_id, m.mode_name);
       this.setNames.set(m.set_id, m.set_name);
@@ -188,7 +188,20 @@ export class Evaluator {
   // ---- evaluation ----
   build(root: NodeRec): VNode {
     this.count = 0;
-    return this.expand(root, new Map(), [], 0, 0);
+    const tree = this.expand(root, new Map(), [], 0, 0);
+    // explicit variable modes of the frames above the root apply to it as well (nearest wins, outer first)
+    const inherited = this.ancestorModes(root);
+    if (inherited.length) tree.modes = [...inherited, ...(tree.modes ?? [])];
+    return tree;
+  }
+
+  private ancestorModes(root: NodeRec): string[] {
+    const chain: string[] = [];
+    for (let p = root.parent_id ? this.node(root.parent_id) : undefined; p; p = p.parent_id ? this.node(p.parent_id) : undefined) {
+      const vm = this.raw(p)?.vm as { s: string; m: string }[] | undefined;
+      if (vm?.length) chain.unshift(...vm.map((e) => `${this.setNames.get(e.s) ?? e.s}=${this.modeNames.get(e.m) ?? e.m}`));
+    }
+    return chain;
   }
 
   private tick(): void {
@@ -308,14 +321,15 @@ export class Evaluator {
       if (d.y != null) r.y = d.y;
       target.row = r;
       if (d.geom) target.geomKey = d.geom;
+      if (d.ns && r.styles?.includes('"stroke"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.stroke; target.row = { ...r, styles: JSON.stringify(st) }; }
     }
     return node;
   }
 
-  private derivedOf(inst: string): { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null }[] {
+  private derivedOf(inst: string): { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[] {
     let d = this.derivedC.get(inst);
     if (!d) {
-      d = (this.qDerived.all(inst) as { p: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null }[]).map((r) => ({ ...r, ps: r.p, p: r.p.split('/') }));
+      d = (this.qDerived.all(inst) as { p: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[]).map((r) => ({ ...r, ps: r.p, p: r.p.split('/') }));
       this.derivedC.set(inst, d);
     }
     return d;

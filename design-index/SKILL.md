@@ -48,7 +48,10 @@ All commands except `ingest` accept `--file <path>` (default: last indexed file)
 `id type "name" W×H` · `fill` = fills parent, `hug` = fits content, number = fixed · `row`/`col` = flex direction, `gap=` `pad=` spacing ·
 `$name` = token, use CSS variable `var(--name)` · `(=$x?)` = same value as token x but not bound in the design ·
 `→Comp[Variant]` = component instance · `.s3` = repeated style, defined once at the top · `svg=…` = exported vector file name ·
-`@x,y` = absolute position (only inside absolutely positioned parents) · `… N children (tree <id> …)` = more below, run that command.
+no `r=` = square corners (radius 0): never round a box on your own · `hug(N)` text = natural width, use `white-space: nowrap` · `@x,y` = absolute position (only inside absolutely positioned parents) · `… N children (tree <id> …)` = more below, run that command.
+`$token{#hex}` = under the explicit variable mode of that frame (`modes{…}` on it or a parent) the token has this value: use the hex/mode, not the default CSS value.
+`→Comp[…]` is the component actually shown; the node's own name can be stale (e.g. "Circle-dash" showing a numbered box): trust the `→` component and `svg=`.
+`svg=` on a vector inside an instance: `assets export <frame-id> --out <dir>` writes that exact file (with the instance's own shape and color).
 `spec` shows the content of an instance below it (taken from its component, with the instance's text, style, visibility and swap overrides applied).
 Lines starting with `# hidden` / `# text value(s) not placed` list things `spec` could not show: ASK THE USER about them, never drop or invent them.
 

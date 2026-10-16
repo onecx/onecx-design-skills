@@ -86,7 +86,7 @@ export interface VariableRow {
 }
 
 export interface PropDefRow { owner: string; id: string; name: string; type: string; initial: unknown; parent: string | null }
-export interface DerivedRow { inst: string; p: string; w?: number; h?: number; x?: number; y?: number; geom?: string | null }
+export interface DerivedRow { inst: string; p: string; w?: number; h?: number; x?: number; y?: number; geom?: string | null; ns?: boolean }
 export interface VarModeRow { set_id: string; set_key: string | null; set_name: string; mode_id: string; mode_name: string }
 export interface AssetRow { hash: string; path: string; mime: string; size: number; w?: number; h?: number }
 export interface InteractionRow { node_id: string; trigger: string; action: string; target_id?: string | null; detail?: string | null }

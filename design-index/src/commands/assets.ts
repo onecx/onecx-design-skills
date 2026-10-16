@@ -8,6 +8,7 @@ import type { Styles } from '../model.js';
 import { fmtBytes } from '../util.js';
 import { requireNode } from './structure.js';
 import { svgName } from './spec.js';
+import { Evaluator, type VNode } from '../instances.js';
 
 const VECTOR = ['path', 'line', 'polygon', 'ellipse', 'boolean'];
 
@@ -53,7 +54,8 @@ export function assetsExport(ix: Opened, out: Out, id: string, o: { out: string 
   const sub = `WITH RECURSIVE t(id) AS (SELECT id FROM nodes WHERE id=? UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id=t.id)`;
   const format = fmtOf(ix);
   const assetsDir = path.join(ix.dir, 'assets');
-  let nSvg = 0, nImg = 0, missing = 0;
+  let nImg = 0, missing = 0;
+  const svgs = new Set<string>();
 
   // 1. raster images referenced by fills
   const withImg = db.prepare(`${sub} SELECT n.id, n.styles FROM t CROSS JOIN nodes n ON n.id=t.id WHERE n.styles LIKE '%"k":"img"%'`).all(id) as { id: string; styles: string }[];
@@ -73,11 +75,27 @@ export function assetsExport(ix: Opened, out: Out, id: string, o: { out: string 
   }
 
   // 2. vector nodes: one SVG each (names match the svg= entries in `spec`)
-  const vecs = db.prepare(`${sub} SELECT n.id, n.name FROM t CROSS JOIN nodes n ON n.id=t.id WHERE n.type IN (${VECTOR.map(() => '?').join(',')}) AND n.visible=1 LIMIT 2000`).all(id, ...VECTOR) as { id: string; name: string }[];
-  for (const v of vecs) {
-    const r = renderSvg(db, v.id, { assetsDir, format, background: null, maxNodes: 200 });
-    fs.writeFileSync(path.join(dest, svgName(v)), r.svg);
-    nSvg++;
+  if (format === 'fig') {
+    // vectors inside instances only exist after evaluation (saved geometry, fill overrides): export the evaluated nodes
+    const ev = new Evaluator(db, { maxDepth: 99, cap: 200000 });
+    const walk = (v: VNode): void => {
+      if (v.hidden) return;
+      if (VECTOR.includes(v.row.type) && svgs.size < 2000) {
+        const r = renderSvg(db, v.row.id, { assetsDir, format, background: null, maxNodes: 200, vnode: v });
+        const fn = svgName(v.row, v.geomKey);
+        fs.writeFileSync(path.join(dest, fn), r.svg);
+        svgs.add(fn);
+      }
+      for (const k of v.kids) walk(k);
+    };
+    walk(ev.build(root as any));
+  } else {
+    const vecs = db.prepare(`${sub} SELECT n.id, n.name FROM t CROSS JOIN nodes n ON n.id=t.id WHERE n.type IN (${VECTOR.map(() => '?').join(',')}) AND n.visible=1 LIMIT 2000`).all(id, ...VECTOR) as { id: string; name: string }[];
+    for (const v of vecs) {
+      const r = renderSvg(db, v.id, { assetsDir, format, background: null, maxNodes: 200 });
+      fs.writeFileSync(path.join(dest, svgName(v)), r.svg);
+      svgs.add(svgName(v));
+    }
   }
 
   // 3. a small container made only of vectors (icon, logo) is exported as one combined SVG.
@@ -88,10 +106,11 @@ export function assetsExport(ix: Opened, out: Out, id: string, o: { out: string 
       const r = renderSvg(db, id, { assetsDir, format, background: null, maxNodes: 500 });
       if (r.w <= 400 && r.h <= 400 && r.w > 0 && r.h > 0) {
         fs.writeFileSync(path.join(dest, svgName(root)), r.svg);
-        nSvg++;
+        svgs.add(svgName(root));
       }
     }
   }
+  const nSvg = svgs.size;
   out.add(`${nSvg} SVG, ${nImg} image(s) → ${o.out}${missing ? ` · ${missing} image reference(s) without file (missing in the source)` : ''}`, { svg: nSvg, images: nImg, missing, dir: o.out });
   if (!nSvg && !nImg) out.add('No exportable vectors/images in this subtree.');
   if (nImg) out.add('Images are in their original format (PNG/JPEG/WebP); conversion/scaling belongs in the project build.');

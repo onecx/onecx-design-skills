@@ -1,12 +1,14 @@
 // Instance evaluation semantics ported from open-pencil's @open-pencil/fig (MIT): bindings with defaults, instance swap through a
 // property, path-addressed overrides that stay distinct per instance, visibility property, saved derived geometry.
 import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openIndex } from '../src/cache.js';
 import { ingest } from '../src/ingest.js';
 import { buildSpec } from '../src/commands/spec.js';
+import { Evaluator } from '../src/instances.js';
 import { buildFig, type FigNode } from './helpers/fig-builder.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'di-inst-'));
@@ -78,5 +80,18 @@ describe('instance evaluation', () => {
 
   it('uses the saved derived size of an occurrence', () => {
     expect(block(spec(), 'D')).toMatch(/"Title" text 77×13/);
+  });
+
+  it('inherits explicit variable modes from frames above the queried root', () => {
+    const ix = openIndex(file);
+    // the page frame sets a mode; a query that starts at a child must still see it
+    const w = new DatabaseSync(path.join(ix.dir, 'index.db'));
+    w.prepare("UPDATE nodes SET raw=? WHERE id='1:1'").run(JSON.stringify({ vm: [{ s: 'set-x', m: '0:9' }] }));
+    w.close();
+    const db = openIndex(file).db;
+    const ev = new Evaluator(db, { maxDepth: 99, cap: 10000 });
+    const child = ev.node('5:1')!;
+    expect(ev.build(child).modes?.length).toBe(1);
+    expect(ev.build(ev.node('1:1')!).modes?.length).toBe(1);
   });
 });

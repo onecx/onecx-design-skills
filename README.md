@@ -85,6 +85,14 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
 
 ## Changelog
+- **0.1.2**
+  - `.fig` corner radius: per-corner values without `cornerRadius` and without the "independent" flag are not drawn (Figma shows them square; 369 nodes in the test export, all 100). Fixes pill-shaped buttons that are rectangular in Figma.
+  - `.fig` strokes: per-side widths are read from `borderTopWeight…` / `borderStrokeWeightsIndependent` (was read from wrong field names, which drew a box on all sides). An occurrence whose saved stroke outline is empty has no stroke.
+  - `assets export` writes the real shapes of icons inside instances (arrows, digits); `spec` `svg=` names match. Before, these were black rectangles.
+  - Explicit variable modes are inherited from frames above the queried frame (as in open-pencil); `spec` prints `$token{#hex}` where a mode changes a token value.
+  - `SKILL.md`: reading rules (trust the `→` component over the node name, no `r=` means square corners, `hug` text means no wrapping, `{#hex}` and `svg=` notation).
+  - Index schema version 22: re-run `ingest --force` on existing caches.
+  - Measured with a small model (same task, 44-point checklist): 0.1.2 runs scored 91/91/91; the earlier 0.1.1 build scored 89 on the same checklist for its best run. Small sample, indicative only.
 - **0.1.1**
   - `.fig`: instance overrides now include style changes (text color, size, weight, shared text styles, radius, opacity), "make visible" overrides and boolean visibility properties; swapped-in components are resolved.
   - `spec` shows the content of instances (from the component, with overrides applied) and lists hidden layers and text values it could not place, so a model asks instead of guessing.

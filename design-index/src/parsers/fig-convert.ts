@@ -83,7 +83,7 @@ const JC: Record<string, string> = { MIN: '', CENTER: 'center', MAX: 'end', SPAC
 export interface PropDef { owner: string; id: string; name: string; type: string; initial: unknown; parent: string | null }
 
 export interface Converted {
-  derived?: { p: string; w?: number; h?: number; x?: number; y?: number; g?: { blob: number; rule?: string }[] }[];
+  derived?: { p: string; w?: number; h?: number; x?: number; y?: number; ns?: boolean; g?: { blob: number; rule?: string }[] }[];
   propdefs?: PropDef[];
   row: NodeRow;
   geomRefs?: { blob: number; rule?: string }[];
@@ -172,7 +172,9 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
   if (fill.length) styles.fill = fill;
   if (stroke.length) {
     const w = n.strokeWeight;
-    const per = [n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight];
+    // per-side widths count only with the independent flag; a side without a value then has width 0
+    const indep = n.borderStrokeWeightsIndependent === true;
+    const per = indep ? [n.borderTopWeight ?? 0, n.borderRightWeight ?? 0, n.borderBottomWeight ?? 0, n.borderLeftWeight ?? 0] : [];
     styles.stroke = {
       paints: stroke,
       w: per.some((x) => typeof x === 'number') ? per.map((x) => x ?? w ?? 0) : typeof w === 'number' ? w : undefined,
@@ -181,7 +183,11 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
     };
   }
   const radii = [n.rectangleTopLeftCornerRadius, n.rectangleTopRightCornerRadius, n.rectangleBottomRightCornerRadius, n.rectangleBottomLeftCornerRadius];
-  if (radii.some((r) => typeof r === 'number' && r > 0)) {
+  // Figma writes a uniform radius as `cornerRadius` (plus the per-corner copies). Per-corner values alone, without `cornerRadius` and
+  // without the "independent" flag, are not drawn (measured: 369 such nodes, all 100/100/100/100, shown as rectangles in Figma).
+  const perCornerDrawn = n.rectangleCornerRadiiIndependent === true || typeof n.cornerRadius === 'number';
+  if (!perCornerDrawn && radii.some((r) => typeof r === 'number' && r > 0)) raw.unflaggedCornerRadius = radii[0];
+  if (perCornerDrawn && radii.some((r) => typeof r === 'number' && r > 0)) {
     const r = radii.map((x) => x ?? n.cornerRadius ?? 0);
     styles.r = new Set(r).size === 1 ? r[0] : r;
     for (const x of new Set(r)) if (x) ctx.usage('radius', String(Math.round(x)));
@@ -282,14 +288,17 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
   // explicit variable modes of this frame: they decide what mode-dependent ("contextual") tokens resolve to below it
   const vmEntries = n.variableModeBySetMap?.entries as Any[] | undefined;
   if (vmEntries?.length) raw.vm = vmEntries.map((e) => ({ s: e.variableSetID?.assetRef?.key ?? guidStr(e.variableSetID?.guid), m: guidStr(e.variableModeID) }));
-  const derived: { p: string; w?: number; h?: number; x?: number; y?: number; g?: { blob: number; rule?: string }[] }[] = [];
+  const derived: { p: string; w?: number; h?: number; x?: number; y?: number; ns?: boolean; g?: { blob: number; rule?: string }[] }[] = [];
   if (n.type === 'INSTANCE') {
     // Figma's saved layout of the instance content (cache, not an override): effective size and position per path
     for (const d of (n.derivedSymbolData ?? []) as Any[]) {
       const path = (d.guidPath?.guids ?? []).map(guidStr).join('/');
       const g = ((d.fillGeometry ?? []) as Any[]).filter((x) => typeof x.commandsBlob === 'number').map((x) => ({ blob: x.commandsBlob as number, rule: x.windingRule as string | undefined }));
-      if (!path || (!d.size && !d.transform && !g.length)) continue;
-      const e: { p: string; w?: number; h?: number; x?: number; y?: number; g?: { blob: number; rule?: string }[] } = { p: path };
+      // Figma saved an empty stroke outline for this occurrence: whatever stroke the component declares is not drawn
+      const ns = Array.isArray(d.strokeGeometry) && d.strokeGeometry.length === 0;
+      if (!path || (!d.size && !d.transform && !g.length && !ns)) continue;
+      const e: { p: string; w?: number; h?: number; x?: number; y?: number; ns?: boolean; g?: { blob: number; rule?: string }[] } = { p: path };
+      if (ns) e.ns = true;
       if (g.length) e.g = g;
       if (d.size) { e.w = Math.round(d.size.x * 100) / 100; e.h = Math.round(d.size.y * 100) / 100; }
       if (d.transform) { e.x = Math.round(d.transform.m02 * 100) / 100; e.y = Math.round(d.transform.m12 * 100) / 100; }

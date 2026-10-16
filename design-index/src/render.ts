@@ -23,7 +23,7 @@ interface R {
 }
 
 export interface RenderResult { svg: string; w: number; h: number; notes: string[]; nodes: number }
-export interface RenderOpts { assetsDir: string; format: 'pen' | 'fig'; background?: string | null; maxNodes?: number; hideText?: boolean }
+export interface RenderOpts { assetsDir: string; format: 'pen' | 'fig'; background?: string | null; maxNodes?: number; hideText?: boolean; /** render this evaluated node instead of building it from `id` (vectors inside instances) */ vnode?: VNode }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const f2 = (n: number) => String(Math.round(n * 100) / 100);
@@ -99,10 +99,10 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   const max = opts.maxNodes ?? 40000;
   // instances are expanded by the shared evaluator (component + bindings + overrides + saved layout), not here
   const ev = new Evaluator(db, { maxDepth: 99, cap: max * 4 });
-  const rootRow = ev.node(id);
+  const rootRow = opts.vnode ? opts.vnode.row : ev.node(id);
   if (!rootRow) throw new Error(`Node "${id}" not found.`);
   let vtree: VNode;
-  try { vtree = ev.build(rootRow); } catch (e) { if (e instanceof TooBig) throw new Error(`Frame too large to render (> ${max * 4} nodes): render a smaller section.`); throw e; }
+  try { vtree = opts.vnode ?? ev.build(rootRow as any); } catch (e) { if (e instanceof TooBig) throw new Error(`Frame too large to render (> ${max * 4} nodes): render a smaller section.`); throw e; }
   const geoms = new Map<string, string>();
   const qGeom = db.prepare('SELECT data FROM geometry WHERE node_id=?');
   let nNodes = 0;
