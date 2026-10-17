@@ -249,7 +249,7 @@ const more = (): FigNode[] => [
   { id: [36, 1], type: 'TEXT', name: 'Sharp', parent: [1, 1], pos: 'k8', w: 400, h: 20, text: 'Straße x',
     extra: { textCase: 'UPPER', fontName: { family: 'Inter', style: 'Regular' }, textData: { characters: 'Straße x', characterStyleIDs: [0, 0, 0, 0, 0, 0, 0, 1], styleOverrideTable: [{ styleID: 1, fontName: { family: 'Inter', style: 'Bold' } }] } } },
   { id: [36, 2], type: 'TEXT', name: 'Emoji', parent: [1, 1], pos: 'k9', w: 400, h: 20, text: '😀 hi',
-    extra: { fontName: { family: 'Inter', style: 'Regular' }, textData: { characters: '😀 hi', characterStyleIDs: [0, 0, 0, 1, 1], styleOverrideTable: [{ styleID: 1, fontName: { family: 'Inter', style: 'Bold' } }] } } },
+    extra: { fontName: { family: 'Inter', style: 'Regular' }, textData: { characters: '😀 hi', characterStyleIDs: [0, 0, 1, 1], styleOverrideTable: [{ styleID: 1, fontName: { family: 'Inter', style: 'Bold' } }] } } },
   { id: [36, 3], type: 'TEXT', name: 'Linky', parent: [1, 1], pos: 'l0', w: 400, h: 20, text: 'one two',
     extra: { fontName: { family: 'Inter', style: 'Regular' }, hyperlink: { url: 'https://a.example' }, textData: { characters: 'one two', characterStyleIDs: [1, 1, 1, 0, 2, 2, 2], styleOverrideTable: [
       { styleID: 1, fontName: { family: 'Inter', style: 'Bold' }, hyperlink: { url: 'https://a.example' } }, { styleID: 2, hyperlink: { url: 'https://b.example' } }] } } },
@@ -766,7 +766,7 @@ describe('review fixes (0.1.4)', () => {
   it('applies the case per range although upper case changes the length (ß → SS)', () => {
     expect(render('36:1').svg).toContain('STRASSE <tspan font-weight="700">X</tspan>');
   });
-  it('indexes ranges in UTF-16 units (surrogate pairs)', () => {
+  it('reads style ids per code point and prints ranges in UTF-16 units (surrogate pairs)', () => {
     expect(styles('36:2').runs[0]).toMatchObject({ i: 3, n: 2 });
     expect(lineOf('1:1', 'Emoji')).toContain('runs[3-5 "hi" w700]');
     expect(render('36:2').svg).toContain('😀 <tspan font-weight="700">hi</tspan>');

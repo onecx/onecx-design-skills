@@ -16,7 +16,7 @@ process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') process.std
 
 const program = new Command('design-query')
   .description('Queries against an index of .pen/.fig design files (small, token-limited output)')
-  .version('0.1.4')
+  .version('0.1.5')
   .showHelpAfterError();
 
 interface Common { file?: string; json?: boolean; maxTokens?: string }

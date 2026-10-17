@@ -12,7 +12,7 @@ struct Number { float value; NumberUnits units; }
 enum NumberUnits { RAW = 0; PIXELS = 1; PERCENT = 2; }
 enum NodeType { DOCUMENT = 0; CANVAS = 1; FRAME = 2; TEXT = 3; SYMBOL = 4; INSTANCE = 5; VECTOR = 6; VARIABLE_SET = 7; VARIABLE = 8; ROUNDED_RECTANGLE = 9;
   ELLIPSE = 10; REGULAR_POLYGON = 11; SLICE = 12; BOOLEAN_OPERATION = 13; TEXT_PATH = 14; STAR = 15; LINE = 16; BRUSH = 17; }
-enum PaintType { SOLID = 0; GRADIENT_LINEAR = 1; GRADIENT_RADIAL = 2; GRADIENT_ANGULAR = 3; GRADIENT_DIAMOND = 4; IMAGE = 5; }
+enum PaintType { SOLID = 0; GRADIENT_LINEAR = 1; GRADIENT_RADIAL = 2; GRADIENT_ANGULAR = 3; GRADIENT_DIAMOND = 4; IMAGE = 5; EMOJI = 6; }
 enum VarType { COLOR = 0; FLOAT = 1; STRING = 2; }
 enum StackSize { FIXED = 0; RESIZE_TO_FIT = 1; RESIZE_TO_FIT_WITH_IMPLICIT_SIZE = 2; }
 enum StackJustify { MIN = 0; CENTER = 1; MAX = 2; SPACE_EVENLY = 3; SPACE_BETWEEN = 4; SPACE_AROUND = 5; SPACE_EVENLY_CSS = 6; }
@@ -57,7 +57,7 @@ message VarDataMsg { VarAnyValue value = 1; VariableDataType dataType = 2; }
 message VarMapEntry { VariableField variableField = 1; VarDataMsg variableData = 2; }
 message VarMap { VarMapEntry[] entries = 1; }
 message ColorVar { VarDataMsg value = 1; }
-message Paint { PaintType type = 1; Color color = 2; float opacity = 3; bool visible = 4; Matrix transform = 5; ColorStop[] stops = 6; ImageScaleMode imageScaleMode = 7; Image image = 8; VarDataMsg colorVar = 9; BlendMode blendMode = 10; }
+message Paint { PaintType type = 1; Color color = 2; float opacity = 3; bool visible = 4; Matrix transform = 5; ColorStop[] stops = 6; ImageScaleMode imageScaleMode = 7; Image image = 8; VarDataMsg colorVar = 9; BlendMode blendMode = 10; uint[] emojiCodePoints = 11; }
 message Effect { EffectType type = 1; Vector offset = 2; float radius = 3; Color color = 4; bool visible = 5; float spread = 6; }
 message FontName { string family = 1; string style = 2; string postscript = 3; }
 message TextLine { LineType lineType = 1; uint indentationLevel = 2; }

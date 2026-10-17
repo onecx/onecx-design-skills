@@ -17,6 +17,10 @@ for f in basic-shapes clip-test medium-complex open-peeps; do
 done
 # Octopus (opendesigndev) Figma parser test asset (pinned commit)
 curl -fLo Complex.fig https://raw.githubusercontent.com/opendesigndev/octopus/c3751d2d458354be118d138df8eb60b8be4bb8d3/packages/octopus-fig/test/integration/figma-parser/assets/aoZAhPTVzGi1rXnU35YPVb/Complex.fig
+# TELUS Design System components (pinned commit)
+curl -fLo tds-components.fig https://raw.githubusercontent.com/telus-labs/tds-core/26852e5821ca2a3e4eec05b9a3ad57b118c1c153/docs/assets/figma-files/tds-components.fig
+# fig2sketch example from its history (raw fig-kiwi v2, deleted from the repository in 2022)
+curl -fLo google_material_design.fig https://raw.githubusercontent.com/sketch-hq/fig2sketch/3bb579868774a6b2112169953508fe876260c4f1/example/google_material_design.fig
 # fig2sketch test data (pinned commit), into f2s/
 for f in broken_images corners noise_and_grain prototyping prototyping_components prototyping_swaps_and_instances sections stacks_wrap structure vector; do
   curl -fLo f2s/$f.fig https://raw.githubusercontent.com/sketch-hq/fig2sketch/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/$f.fig
@@ -42,6 +46,8 @@ redistributing a file.
 | `medium-complex.fig` | [OpenFig-org/openfig-cli](https://github.com/OpenFig-org/openfig-cli/blob/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/medium-complex.fig) | MIT (repository LICENSE) | `5126634984cb7a441c8c12583f0cef916cf01dee8084c107a2d6abf75b54928e` |
 | `open-peeps.fig` | [OpenFig-org/openfig-cli](https://github.com/OpenFig-org/openfig-cli/blob/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/open-peeps.fig) | MIT (repository LICENSE); no separate licence stated for the illustration content | `2493c670da109daa17ebde8b89a42ae629f37bdfc3565990eef155822f41be3e` |
 | `Complex.fig` | [opendesigndev/octopus `packages/octopus-fig/test/integration/figma-parser/assets`](https://github.com/opendesigndev/octopus/blob/c3751d2d458354be118d138df8eb60b8be4bb8d3/packages/octopus-fig/test/integration/figma-parser/assets/aoZAhPTVzGi1rXnU35YPVb/Complex.fig) | Apache-2.0 (repository LICENSE) | `151ee2dcafd30c4b17ef432700ed11e92e8acb8591f9542de4a57937a3d8c81d` |
+| `tds-components.fig` | [telus-labs/tds-core `docs/assets/figma-files`](https://github.com/telus-labs/tds-core/blob/26852e5821ca2a3e4eec05b9a3ad57b118c1c153/docs/assets/figma-files/tds-components.fig) | MIT (repository LICENSE) | `399524f6fde87a40556703b31a12c1c286acb6ab8fda5f33862401549f8cfb66` |
+| `google_material_design.fig` | [sketch-hq/fig2sketch `example/` at 3bb5798](https://github.com/sketch-hq/fig2sketch/blob/3bb579868774a6b2112169953508fe876260c4f1/example/google_material_design.fig) (removed from the repository later) | repository MIT; content: Google's Material Design kit, committed by the fig2sketch authors as an example, no separate licence stated: use for local tests only, do not redistribute | `cb87c41c5c1f530a36a7e1608bcc2b7e794c74d59066ce21624099a72cbca150` |
 | `f2s/vector.fig` | [sketch-hq/fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/vector.fig) | MIT (repository LICENSE) | `3802d80f8581af7d4b1aa90ccf946dc1c656fb281daa22cd3eb4b8cad7cfc865` |
 | `f2s/broken_images.fig` | [fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/broken_images.fig) | MIT | `0f7534d05369a6739375e6245a9a51a80c30d34999f90d1c817cfcbef2559f79` |
 | `f2s/structure.fig` | [fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/structure.fig) | MIT | `2625997d999ecec64de7f8f8c2e4c57a714f1006e362ba79a118ae9606113b50` |

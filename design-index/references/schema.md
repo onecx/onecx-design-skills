@@ -33,7 +33,7 @@ queried directly (always go through `design-query`).
 ## `styles` (JSON)
 - `fill`: `[{k:"solid", c:"#rrggbb[aa]", v:"<token>"}, {k:"grad", t (linear|radial|angular|diamond), stops, a, p (handles, node-normalized: linear [x1,y1,x2,y2], others [cx,cy,ax,ay,bx,by])}, {k:"img", asset:"<hash>", mode (cover|contain|crop|tile|stretch), tf (crop transform), o (opacity)}]`; every paint may carry `bm` (blend mode in CSS spelling, e.g. `multiply`; Figma-only `linear-burn`/`linear-dodge`)
 - `blend`: layer blend mode (absent = normal / pass-through) · `link`: hyperlink of the whole text (URL or `#<node-id>`)
-- `runs`: text ranges with their own style `[{i, n (UTF-16 start/length), font (only the fields the range sets; null = default), fill, link, sty}]` (fig `characterStyleIDs` + `styleOverrideTable`, range style references resolved)
+- `runs`: text ranges with their own style `[{i, n (UTF-16 start/length), font (only the fields the range sets; null = default), fill, link, sty, emoji}]` (fig `characterStyleIDs`, one id per code point, + `styleOverrideTable`, range style references resolved; `emoji: true` = colour emoji characters, Figma EMOJI paint, found by the entry's code points)
 - `ow`: effective stroke weight of an outline icon (`raw.geometryFrom = "stroke"`) after an instance override or scale · `ifill`: the layer's own paints where a fill style replaced different ones, stored only on layers that some instance detaches from the style
 - `stroke`: `{paints, w (number or [t,r,b,l]), align, dash}` · `r` radius (number or [tl,tr,br,bl]; never on vectors) · `op` · `clip`
 - `rot` (degrees, counter-clockwise about the top-left origin) · `flip` x|y (mirrored before rotating; the full matrix is in `raw.m`)

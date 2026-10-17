@@ -23,6 +23,12 @@ interface R {
   geomBox?: [number, number];
   /** explicit variable modes in effect (mode names, outermost first) */
   modes?: string[];
+  /** fig: an explicit mode changed this node's gap, padding or size (its saved layout shows another mode) */
+  dirty?: boolean;
+  /** memo: this node or a descendant is dirty */
+  chg?: boolean;
+  /** size limits under the explicit mode (min/max width/height variables) */
+  lim?: { minW?: number; maxW?: number; minH?: number; maxH?: number };
 }
 
 export interface RenderResult { svg: string; w: number; h: number; notes: string[]; nodes: number }
@@ -88,9 +94,14 @@ function wrap(text: string, maxW: number, fs: number, bold: boolean, ls: number)
   return out;
 }
 
+/** an emoji: pictograph with optional variation selector, skin tone and ZWJ continuation, or a flag (regional indicator pair) */
+const EMOJI_RE = /[#*0-9]\uFE0F?\u20E3|[\u{1F1E6}-\u{1F1FF}]{2}|\p{Extended_Pictographic}(?:[\uFE0E\uFE0F]|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}])*(?:\u200D\p{Extended_Pictographic}(?:[\uFE0E\uFE0F]|[\u{1F3FB}-\u{1F3FF}])*)*/gu;
+/** placeholder colour of an emoji (no colour emoji font is bundled) */
+const EMOJI_FILL = '#f5c33b';
 /** cap height as a fraction of the font size (Open Sans 0.714, Inter 0.727, Roboto 0.711) */
 const CAP_HEIGHT = 0.7;
 const numOf = (v: unknown, d = 0): number => (typeof v === 'number' && isFinite(v) ? v : d);
+const clampTo = (v: number, min?: number, max?: number): number => Math.max(min ?? -Infinity, Math.min(max ?? Infinity, v));
 /** text as displayed: Figma keeps the source characters and applies the case at render time */
 export function withCase(text: string, c?: string): string {
   if (c === 'upper' || c === 'small_caps' || c === 'small_caps_forced') return text.toUpperCase();
@@ -241,6 +252,25 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const fs = num('font-size');
     if (fs !== undefined && s.font) { s.font = { ...s.font, s: fs }; changed = true; }
     if (changed) { r.s = s; notes.add('Numbers bound to variables drawn with their value under the explicit variable mode'); }
+    // auto-layout numbers and sizes: where the mode value differs from the saved one, the saved layout shows another mode
+    // (instance content keeps its component's default-mode layout); fig re-lays out the container below
+    const l = { ...r.l };
+    let moved = false;
+    const flex = l.dir === 'row' || l.dir === 'col';
+    const gap = num('gap');
+    if (flex && gap !== undefined && l.jc !== 'between' && l.jc !== 'around' && l.jc !== 'evenly' && Math.abs(gap - numOf(l.gap)) > 0.005) { l.gap = gap; moved = true; }
+    const sides = ['pad-top', 'pad-right', 'pad-bottom', 'pad-left'].map((k) => num(k));
+    if (flex && sides.some((x) => x !== undefined)) {
+      const cur = l.pad ?? [0, 0, 0, 0];
+      const pad = sides.map((x, i) => x ?? cur[i] ?? 0);
+      if (pad.some((x, i) => Math.abs(x - (cur[i] ?? 0)) > 0.005)) { l.pad = pad; moved = true; }
+    }
+    const lim = { minW: num('min-width'), maxW: num('max-width'), minH: num('min-height'), maxH: num('max-height') };
+    if (Object.values(lim).some((x) => x !== undefined)) r.lim = lim;
+    let w = num('width') ?? r.w, h = num('height') ?? r.h;
+    w = clampTo(w, lim.minW, lim.maxW); h = clampTo(h, lim.minH, lim.maxH);
+    if (Math.abs(w - r.w) > 0.005 || Math.abs(h - r.h) > 0.005) { r.w = w; r.h = h; moved = true; }
+    if (moved) { r.l = l; r.dirty = true; }
   }
   const root = toR(vtree);
   const use = { length: nNodes };
@@ -361,6 +391,75 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     leftover = 0;
   }
 
+  // ---- fig: re-layout where an explicit variable mode changed gap, padding or size (saved geometry everywhere else) ----
+  const changedBelow = (r: R): boolean => (r.chg ??= !!r.dirty || r.kids.map(changedBelow).some(Boolean));
+  /**
+   * Places the flow children of an auto-layout container with its (mode) gap and padding, keeping every child's saved size unless
+   * it fills the container or a mode changed it; hug sizes are recomputed. Containers outside the changed subtrees keep Figma's
+   * saved layout. `fw`/`fh` = size forced by the parent (fill).
+   */
+  function place(r: R, fw?: number, fh?: number): void {
+    let resized = false;
+    // a size forced by the parent (fill) still respects the node's own min/max under the mode
+    if (fw != null) fw = clampTo(fw, r.lim?.minW, r.lim?.maxW);
+    if (fh != null) fh = clampTo(fh, r.lim?.minH, r.lim?.maxH);
+    if (fw != null && Math.abs(fw - r.w) > 0.005) { r.w = fw; resized = true; }
+    if (fh != null && Math.abs(fh - r.h) > 0.005) { r.h = fh; resized = true; }
+    const dir = r.l.dir;
+    if (!(dir === 'row' || dir === 'col') || r.l.wrap || r.row.type === 'group' || !(changedBelow(r) || resized)) {
+      for (const k of r.kids) if (changedBelow(k)) place(k);
+      return;
+    }
+    notes.add('Auto layout re-solved where an explicit variable mode changes gap, padding or size (saved layout elsewhere)');
+    const row = dir === 'row';
+    const [pt, pr, pb, pl] = r.l.pad ?? [0, 0, 0, 0];
+    const spaced = r.l.jc === 'between' || r.l.jc === 'around' || r.l.jc === 'evenly';
+    const gap = spaced ? 0 : numOf(r.l.gap);
+    const hugMain = (row ? r.l.w : r.l.h) === 'hug', hugCross = (row ? r.l.h : r.l.w) === 'hug';
+    const innerMain = hugMain ? undefined : row ? r.w - pl - pr : r.h - pt - pb;
+    let innerCross = hugCross ? undefined : row ? r.h - pt - pb : r.w - pl - pr;
+    const flow = r.kids.filter((k) => !k.l.abs);
+    const mainRule = (k: R) => (row ? k.l.w : k.l.h), crossRule = (k: R) => (row ? k.l.h : k.l.w);
+    const msize = (k: R) => (row ? k.w : k.h), csize = (k: R) => (row ? k.h : k.w);
+    const at = (main?: number, cross?: number): [number | undefined, number | undefined] => (row ? [main, cross] : [cross, main]);
+    const fills: R[] = [];
+    for (const k of flow) {
+      if (mainRule(k) === 'fill' && innerMain != null) { fills.push(k); continue; }
+      place(k, ...at(undefined, crossRule(k) === 'fill' && innerCross != null ? innerCross : undefined));
+    }
+    innerCross ??= Math.max(0, ...flow.filter((k) => !fills.includes(k)).map(csize));
+    const used = flow.filter((k) => !fills.includes(k)).reduce((a, k) => a + msize(k), 0) + gap * Math.max(0, flow.length - 1);
+    const share = fills.length ? Math.max(0, ((innerMain ?? 0) - used) / fills.length) : 0;
+    for (const k of fills) place(k, ...at(share, crossRule(k) === 'fill' ? innerCross : undefined));
+    if (hugCross) {
+      innerCross = Math.max(innerCross, ...flow.map(csize));
+      for (const k of flow) if (crossRule(k) === 'fill' && Math.abs(csize(k) - innerCross) > 0.005) place(k, ...at(undefined, innerCross));
+    }
+    const total = flow.reduce((a, k) => a + msize(k), 0) + gap * Math.max(0, flow.length - 1);
+    if (hugMain) { const m = total + (row ? pl + pr : pt + pb); if (row) r.w = clampTo(m, r.lim?.minW, r.lim?.maxW); else r.h = clampTo(m, r.lim?.minH, r.lim?.maxH); }
+    if (hugCross) { const c = innerCross + (row ? pt + pb : pl + pr); if (row) r.h = clampTo(c, r.lim?.minH, r.lim?.maxH); else r.w = clampTo(c, r.lim?.minW, r.lim?.maxW); }
+    const mainSize = row ? r.w - pl - pr : r.h - pt - pb;
+    const crossBox = row ? r.h - pt - pb : r.w - pl - pr;
+    const leftover = Math.max(0, mainSize - total);
+    let cur = row ? pl : pt, between = gap;
+    const jc = r.l.jc;
+    if (jc === 'center') cur += leftover / 2;
+    else if (jc === 'end') cur += leftover;
+    else if (jc === 'between' && flow.length > 1) between = leftover / (flow.length - 1);
+    else if (jc === 'between' && flow.length === 1) cur += leftover / 2;
+    else if (jc === 'around' && flow.length) { const sp = leftover / flow.length; cur += sp / 2; between = sp; }
+    else if (jc === 'evenly' && flow.length) { const sp = leftover / (flow.length + 1); cur += sp; between = sp; }
+    const crossStart = row ? pt : pl;
+    for (const k of flow) {
+      const off = r.l.ai === 'center' ? (crossBox - csize(k)) / 2 : r.l.ai === 'end' ? crossBox - csize(k) : 0;
+      const x = row ? cur : crossStart + off, y = row ? crossStart + off : cur;
+      k.x = Math.round(x * 100) / 100; k.y = Math.round(y * 100) / 100;
+      cur += msize(k) + between;
+    }
+    for (const k of r.kids) if (k.l.abs && changedBelow(k)) place(k);
+  }
+  if (opts.format === 'fig' && changedBelow(root)) place(root);
+
   if (solveLayout) {
     solve(root);
     if (!root.w) root.w = root.row.w ?? 0;
@@ -388,7 +487,13 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     return { c, o };
   };
 
+  /** data URI of an image asset, read once per render */
+  const hrefs = new Map<string, string | undefined>();
   function imageHref(hash: string): string | undefined {
+    if (!hrefs.has(hash)) hrefs.set(hash, readHref(hash));
+    return hrefs.get(hash);
+  }
+  function readHref(hash: string): string | undefined {
     const a = assets.get(hash);
     if (!a) return undefined;
     const file = path.join(opts.assetsDir, '..', a.path);
@@ -479,13 +584,46 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     return gid;
   }
 
+  /**
+   * `fill`/`stroke` attributes of one paint in node coordinates (box w×h): solid colour, gradient or image pattern, with its blend
+   * mode. Undefined for a paint that cannot be drawn (missing image, unresolved token).
+   */
+  function paintAttr(p: Paint, w: number, h: number, attr: 'fill' | 'stroke' = 'fill', blend = true): string | undefined {
+    const bm = blend ? blendAttr(p.bm) : '';
+    if (p.k === 'solid') { const c = colorOf(p); return c ? `${attr}="${c.c}"${c.o < 1 ? ` ${attr}-opacity="${f2(c.o)}"` : ''}${bm}` : undefined; }
+    if (p.k === 'grad') return `${attr}="url(#${gradientDef(p, w, h)})"${bm}`;
+    const pid = imagePattern(p, w, h);
+    return pid ? `${attr}="url(#${pid})"${p.o != null ? ` ${attr}-opacity="${f2(p.o)}"` : ''}${bm}` : undefined;
+  }
   /** fill attribute for a paint list (first solid or gradient paint), in node coordinates */
   function fillAttr(ps: Paint[] | undefined, w: number, h: number): string {
     for (const p of ps ?? []) {
-      if (p.k === 'solid') { const c = colorOf(p); if (c) return `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}${blendAttr(p.bm)}`; }
-      if (p.k === 'grad') return `fill="url(#${gradientDef(p, w, h)})"${blendAttr(p.bm)}`;
+      if (p.k === 'solid' || p.k === 'grad') { const a = paintAttr(p, w, h); if (a) return a; }
     }
     return 'fill="none"';
+  }
+  /** Image paint as a pattern of the node's box (w×h); undefined when the image cannot be embedded. */
+  function imagePattern(p: Paint & { k: 'img' }, w: number, h: number): string | undefined {
+    const href = p.asset ? imageHref(p.asset) : undefined;
+    if (!href) return undefined;
+    let body: string | undefined;
+    if (p.mode === 'crop' && p.tf) {
+      // crop: the paint transform maps the node's unit square to the visible part of the image
+      const [a, b, c, d, e, f] = p.tf;
+      const det = a * e - b * d;
+      if (Math.abs(det) > 1e-12) {
+        const i00 = e / det, i01 = -b / det, i10 = -d / det, i11 = a / det;
+        const i02 = -(i00 * c + i01 * f), i12 = -(i10 * c + i11 * f);
+        body = `<image href="${href}" width="1" height="1" preserveAspectRatio="none" transform="matrix(${[w * i00, h * i10, w * i01, h * i11, w * i02, h * i12].map((x) => +x.toFixed(4)).join(' ')})"/>`;
+      }
+    }
+    if (!body) {
+      const par = p.mode === 'contain' ? 'xMidYMid meet' : p.mode === 'stretch' ? 'none' : 'xMidYMid slice';
+      body = `<image href="${href}" width="${f2(w)}" height="${f2(h)}" preserveAspectRatio="${par}"/>`;
+    }
+    const pid = `p${++uid}`;
+    defs.push(`<pattern id="${pid}" patternUnits="userSpaceOnUse" x="0" y="0" width="${f2(w)}" height="${f2(h)}">${body}</pattern>`);
+    return pid;
   }
   /** style attribute for a paint or layer blend mode (resvg supports the CSS separable and non-separable modes) */
   function blendAttr(bm: string | undefined): string {
@@ -505,28 +643,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       } else if (p.k === 'img') {
         // images are pattern fills of the node's shape: no clip-path layer (resvg drops clipped layers inside masks when the
         // content reaches far outside the canvas, which is exactly the image-in-mask case)
-        const href = p.asset ? imageHref(p.asset) : undefined;
-        const op = p.o != null ? ` fill-opacity="${f2(p.o)}"` : '';
-        let body: string | undefined;
-        if (href && p.mode === 'crop' && p.tf) {
-          // crop: the paint transform maps the node's unit square to the visible part of the image
-          const [a, b, c, d, e, f] = p.tf;
-          const det = a * e - b * d;
-          if (Math.abs(det) > 1e-12) {
-            const i00 = e / det, i01 = -b / det, i10 = -d / det, i11 = a / det;
-            const i02 = -(i00 * c + i01 * f), i12 = -(i10 * c + i11 * f);
-            body = `<image href="${href}" width="1" height="1" preserveAspectRatio="none" transform="matrix(${[w * i00, h * i10, w * i01, h * i11, w * i02, h * i12].map((x) => +x.toFixed(4)).join(' ')})"/>`;
-          }
-        }
-        if (href && !body) {
-          const par = p.mode === 'contain' ? 'xMidYMid meet' : p.mode === 'stretch' ? 'none' : 'xMidYMid slice';
-          body = `<image href="${href}" width="${f2(w)}" height="${f2(h)}" preserveAspectRatio="${par}"/>`;
-        }
-        if (body) {
-          const pid = `p${++uid}`;
-          defs.push(`<pattern id="${pid}" patternUnits="userSpaceOnUse" x="0" y="0" width="${f2(w)}" height="${f2(h)}">${body}</pattern>`);
-          parts.push(shape(r, w, h, `fill="url(#${pid})"${op}${blendAttr(p.bm)}`));
-        } else {
+        const a = paintAttr(p, w, h);
+        if (a) parts.push(shape(r, w, h, a));
+        else {
           notes.add(`Image missing (${p.url ?? p.asset ?? '?'}): gray placeholder`);
           parts.push(shape(r, w, h, 'fill="#d0d0d0"') + `<path d="M0 0L${f2(w)} ${f2(h)}M${f2(w)} 0L0 ${f2(h)}" stroke="#a0a0a0" stroke-width="1"/>`);
         }
@@ -535,29 +654,39 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     return parts.join('');
   }
 
+  /** Stroke paints that can be drawn (solid, gradient, image), bottom to top, each with its own blend mode. */
+  function strokePaints(r: R): Paint[] {
+    return r.s.stroke?.paints ?? [];
+  }
   function strokeSvg(r: R, w: number, h: number): string {
     const st = r.s.stroke;
     if (!st) return '';
-    const p = st.paints.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
-    const col = p ? colorOf(p) : undefined;
-    if (!col) return '';
     const sw = st.w;
-    const fill = `fill="${col.c}"${col.o < 1 ? ` fill-opacity="${f2(col.o)}"` : ''}`;
-    if (Array.isArray(sw)) {
-      const [t, rt, b, l] = sw as number[];
-      const parts: string[] = [];
-      if (t) parts.push(`<rect x="0" y="0" width="${f2(w)}" height="${t}" ${fill}/>`);
-      if (b) parts.push(`<rect x="0" y="${f2(h - b)}" width="${f2(w)}" height="${b}" ${fill}/>`);
-      if (l) parts.push(`<rect x="0" y="0" width="${l}" height="${f2(h)}" ${fill}/>`);
-      if (rt) parts.push(`<rect x="${f2(w - rt)}" y="0" width="${rt}" height="${f2(h)}" ${fill}/>`);
-      return parts.join('');
+    const parts: string[] = [];
+    for (const p of strokePaints(r)) {
+      if (Array.isArray(sw)) {
+        // per-side widths: filled side bands in the node's coordinates (the paint spans the whole box)
+        const fill = paintAttr(p, w, h, 'fill', false);
+        if (!fill) continue;
+        const [t, rt, b, l] = sw as number[];
+        const bands: string[] = [];
+        if (t) bands.push(`<rect x="0" y="0" width="${f2(w)}" height="${t}"/>`);
+        if (b) bands.push(`<rect x="0" y="${f2(h - b)}" width="${f2(w)}" height="${b}"/>`);
+        if (l) bands.push(`<rect x="0" y="0" width="${l}" height="${f2(h)}"/>`);
+        if (rt) bands.push(`<rect x="${f2(w - rt)}" y="0" width="${rt}" height="${f2(h)}"/>`);
+        if (bands.length) parts.push(`<g ${fill}${blendAttr(p.bm)}>${bands.join('')}</g>`);
+        continue;
+      }
+      const a = paintAttr(p, w, h, 'stroke');
+      if (!a) continue;
+      const width = typeof sw === 'number' ? sw : 1;
+      const align = st.align ?? 'inner';
+      const inset = align === 'center' ? 0 : align === 'outer' ? -width / 2 : width / 2;
+      const sattr = `fill="none" ${a} stroke-width="${width}"${st.dash?.length ? ` stroke-dasharray="${st.dash.join(' ')}"` : ''}`;
+      if (r.row.type === 'ellipse') parts.push(`<ellipse cx="${f2(w / 2)}" cy="${f2(h / 2)}" rx="${f2(Math.max(0, w / 2 - inset))}" ry="${f2(Math.max(0, h / 2 - inset))}" ${sattr}/>`);
+      else parts.push(roundedRect(inset, inset, Math.max(0, w - inset * 2), Math.max(0, h - inset * 2), r.s.r, inset, sattr, w, h));
     }
-    const width = typeof sw === 'number' ? sw : 1;
-    const align = st.align ?? 'inner';
-    const inset = align === 'center' ? 0 : align === 'outer' ? -width / 2 : width / 2;
-    const sattr = `fill="none" stroke="${col.c}" stroke-width="${width}"${col.o < 1 ? ` stroke-opacity="${f2(col.o)}"` : ''}${st.dash?.length ? ` stroke-dasharray="${st.dash.join(' ')}"` : ''}`;
-    if (r.row.type === 'ellipse') return `<ellipse cx="${f2(w / 2)}" cy="${f2(h / 2)}" rx="${f2(Math.max(0, w / 2 - inset))}" ry="${f2(Math.max(0, h / 2 - inset))}" ${sattr}/>`;
-    return roundedRect(inset, inset, Math.max(0, w - inset * 2), Math.max(0, h - inset * 2), r.s.r, inset, sattr, w, h);
+    return parts.join('');
   }
 
   function textSvg(r: R): string {
@@ -565,8 +694,15 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const f = r.s.font ?? {};
     const fs = Number(f.s) || 14;
     const lhPx = linePx(f, fs, opts.format === 'fig' ? 1.2 : 1.36);
-    const p = (r.s.fill ?? []).find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
-    const col = (p && colorOf(p)) ?? { c: '#000000', o: 1 };
+    // the text's paint (solid, gradient or image over the text box); default black
+    // one paint server per distinct paint list of this text (not per line or range segment)
+    const fills = new Map<string, string | undefined>();
+    const fillOf = (ps: Paint[] | undefined): string | undefined => {
+      const key = JSON.stringify(ps ?? []);
+      if (!fills.has(key)) { let a: string | undefined; for (const p of ps ?? []) { a = paintAttr(p, r.w, r.h); if (a) break; } fills.set(key, a); }
+      return fills.get(key);
+    };
+    const col = fillOf(r.s.fill) ?? 'fill="#000000"';
     const fam = f.f && !String(f.f).startsWith('$') ? String(f.f) : 'Open Sans';
     fonts.add(fam);
     const weight = f.w != null ? (typeof f.w === 'number' ? f.w : /^\d+$/.test(String(f.w)) ? Number(f.w) : f.w === 'bold' ? 700 : 400) : 400;
@@ -608,7 +744,15 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       const runAt = (ci: number) => runs.findIndex((x) => ci >= x.i && ci < x.i + x.n);
       const body = ln.replace(/…$/, '').length;
       let outS = '', seg = '', cur = -2;
-      const flushSeg = () => { if (seg) outS += cur >= 0 ? `<tspan${runAttrs(runs[cur], f, weight, col)}>${esc(seg)}</tspan>` : esc(seg); seg = ''; };
+      const flushSeg = () => {
+        if (seg && cur >= 0 && runs[cur].emoji) {
+          // colour emoji (Figma draws its emoji images): no emoji font offline, a yellow disc per emoji keeps it visible
+          notes.add('Emoji drawn as yellow placeholder discs (no colour emoji font offline)');
+          const discs = seg.replace(EMOJI_RE, '\u25CF').replace(/[\uFE0E\uFE0F\u200D\u20E3\u{E0020}-\u{E007F}\u{1F3FB}-\u{1F3FF}]/gu, '') || '\u25CF';
+          outS += `<tspan${runAttrs({ ...runs[cur], fill: undefined }, f, weight, col, fillOf)} fill="${EMOJI_FILL}">${esc(discs)}</tspan>`;
+        } else if (seg) outS += cur >= 0 ? `<tspan${runAttrs(runs[cur], f, weight, col, fillOf)}>${esc(seg)}</tspan>` : esc(seg);
+        seg = '';
+      };
       for (let k = 0; k < ln.length; k++) {
         // the ellipsis takes the style of the last character it follows
         const ri = runAt(shown.src[st + Math.min(k, Math.max(0, body - 1))] ?? -1);
@@ -619,11 +763,11 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       return outS || ' ';
     };
     const spans = lines.map((ln, i) => `<tspan x="${f2(x)}" y="${f2(base + i * lhPx)}">${runSpans(ln, i)}</tspan>`).join('');
-    return `<text font-family="${esc(fam)}, 'Open Sans'" font-size="${fs}" font-weight="${weight}"${f.st === 'italic' ? ' font-style="italic"' : ''} fill="${col.c}"${col.o < 1 ? ` fill-opacity="${f2(col.o)}"` : ''} text-anchor="${al}"${f.ls ? ` letter-spacing="${f2(Number(f.ls))}"` : ''}${f.deco ? ` text-decoration="${f.deco}"` : ''} xml:space="preserve">${spans}</text>`;
+    return `<text font-family="${esc(fam)}, 'Open Sans'" font-size="${fs}" font-weight="${weight}"${f.st === 'italic' ? ' font-style="italic"' : ''} ${col} text-anchor="${al}"${f.ls ? ` letter-spacing="${f2(Number(f.ls))}"` : ''}${f.deco ? ` text-decoration="${f.deco}"` : ''} xml:space="preserve">${spans}</text>`;
   }
 
   /** attributes of a text range's tspan: only what differs from the text element */
-  function runAttrs(run: TextRun, base: NonNullable<Styles['font']>, weight: number | string, col: { c: string; o: number }): string {
+  function runAttrs(run: TextRun, base: NonNullable<Styles['font']>, weight: number | string, col: string, fillOf: (ps: Paint[] | undefined) => string | undefined): string {
     const a: string[] = [];
     const rf = run.font ?? {};
     if (rf.f && rf.f !== base.f) { fonts.add(String(rf.f)); a.push(`font-family="${esc(String(rf.f))}, 'Open Sans'"`); }
@@ -632,9 +776,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     if ('st' in rf && (rf.st === 'italic') !== (base.st === 'italic')) a.push(`font-style="${rf.st === 'italic' ? 'italic' : 'normal'}"`);
     if ('deco' in rf && (rf.deco ?? null) !== (base.deco ?? null)) a.push(`text-decoration="${rf.deco ?? 'none'}"`);
     if (typeof rf.ls === 'number' && rf.ls !== base.ls) a.push(`letter-spacing="${f2(rf.ls)}"`);
-    const p = run.fill?.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
-    const c = p ? colorOf(p) : undefined;
-    if (c && (c.c !== col.c || c.o !== col.o)) a.push(`fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}`);
+    // a range's own paint: solid colour, or a gradient / image pattern over the text box (resvg paints text with paint servers)
+    const c = run.fill?.length ? fillOf(run.fill) : undefined;
+    if (c && c !== col) a.push(c);
     else if (run.fill && !run.fill.length) a.push('fill="none"');
     return a.length ? ' ' + a.join(' ') : '';
   }
@@ -694,15 +838,18 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
           // saved outlines of an instance occurrence are already at its size; the component's own outline is in its own box
           const b = r.geom ? { x: 0, y: 0, w: r.geomBox?.[0] ?? w, h: r.geomBox?.[1] ?? h } : vb ? { x: vb[0], y: vb[1], w: vb[2], h: vb[3] } : pathBounds(parts.map((p) => p.d).join(''));
           const sx = b.w ? w / b.w : 1, sy = b.h ? h / b.h : 1;
-          const sp = r.s.stroke?.paints.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
-          const scol = sp ? colorOf(sp) : undefined;
-          let stroke = scol ? ` stroke="${scol.c}" stroke-width="${typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1}"${scol.o < 1 ? ` stroke-opacity="${f2(scol.o)}"` : ''}${r.s.stroke?.dash?.length ? ` stroke-dasharray="${r.s.stroke.dash.join(' ')}"` : ''} vector-effect="non-scaling-stroke"` : '';
+          const bw = b.w || w, bh = b.h || h;
+          // every stroke paint is its own stroked copy of the outline (bottom to top, each with its own blend mode)
+          const sw = typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1;
+          const strokes = strokePaints(r).map((p) => paintAttr(p, bw, bh, 'stroke')).filter((a): a is string => !!a)
+            .map((a) => ` fill="none" ${a} stroke-width="${sw}"${r.s.stroke?.dash?.length ? ` stroke-dasharray="${r.s.stroke.dash.join(' ')}"` : ''} vector-effect="non-scaling-stroke"`);
+          let widen = '';
           // outline icon with a heavier stroke weight than its saved outline: widen the outline by stroking it in its own colour
-          if (!stroke && r.raw.geometryFrom === 'stroke' && typeof r.s.ow === 'number' && typeof r.raw.outlineW === 'number' && !r.geom) {
+          if (!strokes.length && r.raw.geometryFrom === 'stroke' && typeof r.s.ow === 'number' && typeof r.raw.outlineW === 'number' && !r.geom) {
             const drawn = r.raw.outlineW * Math.min(sx, sy);
             const fp = r.s.fill?.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
             const fc = fp ? colorOf(fp) : undefined;
-            if (fc && r.s.ow > drawn + 0.01) stroke = ` stroke="${fc.c}" stroke-width="${f2(r.s.ow - drawn)}"${fc.o < 1 ? ` stroke-opacity="${f2(fc.o)}"` : ''} stroke-linejoin="round" vector-effect="non-scaling-stroke"`;
+            if (fc && r.s.ow > drawn + 0.01) widen = ` stroke="${fc.c}" stroke-width="${f2(r.s.ow - drawn)}"${fc.o < 1 ? ` stroke-opacity="${f2(fc.o)}"` : ''} stroke-linejoin="round" vector-effect="non-scaling-stroke"`;
             else if (r.s.ow < drawn - 0.01) notes.add('Outline icon with a thinner stroke override drawn at the component\'s stroke weight');
           }
           const regions = r.raw.regions as Record<string, Paint[]> | undefined;
@@ -711,17 +858,18 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
             // a region with its own paints (vectorData.styleOverrideTable); an empty list leaves it unfilled
             const paints = part.sid && regions?.[part.sid] ? regions[part.sid] : r.s.fill;
             const rule = part.rule === 'evenodd' || (parts.length === 1 && !part.rule && r.raw.fillRule === 'evenodd') ? ' fill-rule="evenodd"' : '';
-            out.push(`<path d="${esc(part.d)}" ${fillAttr(paints, b.w || w, b.h || h)}${rule}${stroke}${tfm}/>`);
+            out.push(`<path d="${esc(part.d)}" ${fillAttr(paints, bw, bh)}${rule}${widen}${tfm}/>`);
           }
+          for (const st of strokes) for (const part of parts) out.push(`<path d="${esc(part.d)}"${st}${tfm}/>`);
         } else if (t === 'path') { out.push(paintsSvg(r, w, h)); notes.add('Vector without geometry drawn as a plain shape'); }
         else if (t === 'polygon') out.push(polygonSvg(r, w, h));
         else out.push(paintsSvg(r, w, h), strokeSvg(r, w, h));
         break;
       }
       case 'line': {
-        const sp = r.s.stroke?.paints.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
-        const col = (sp && colorOf(sp)) ?? { c: '#000000', o: 1 };
-        out.push(`<line x1="0" y1="0" x2="${f2(w)}" y2="${f2(h)}" stroke="${col.c}" stroke-width="${typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1}"/>`);
+        const sw = typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1;
+        const ps = strokePaints(r).map((p) => paintAttr(p, w, h, 'stroke')).filter((a): a is string => !!a);
+        for (const a of ps.length ? ps : ['stroke="#000000"']) out.push(`<line x1="0" y1="0" x2="${f2(w)}" y2="${f2(h)}" ${a} stroke-width="${sw}"/>`);
         break;
       }
       case 'icon': {
@@ -784,7 +932,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
    */
   function blendsInto(kids: R[]): boolean {
     for (const k of kids) {
-      if (k.s.blend || k.s.fill?.some((p) => p.bm)) return true;
+      if (k.s.blend || k.s.fill?.some((p) => p.bm) || k.s.stroke?.paints.some((p) => p.bm) || k.s.runs?.some((x) => x.fill?.some((p) => p.bm))) return true;
       const isolates = (k.s.clip && k.kids.length) || k.s.op != null || k.s.fx?.length || k.kids.some((x) => x.raw.mask);
       if (!isolates && k.kids.length && blendsInto(k.kids)) return true;
     }

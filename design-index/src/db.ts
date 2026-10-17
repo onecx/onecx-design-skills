@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AssetRow, ComponentRow, DerivedRow, InteractionRow, NodeRow, NoteRow, PropDefRow, Sink, VarModeRow, VariableRow } from './model.js';
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 const SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);

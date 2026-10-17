@@ -294,7 +294,12 @@ function runStyle(e: Any, base: Any, ctx: Ctx): Omit<TextRun, 'i' | 'n'> | null 
     if (!e.fontName && e.semanticItalic === 'ITALIC') f.st = 'italic';
     if (Object.keys(f).length) r.font = f as TextRun['font'];
   }
-  if (Array.isArray(e.fillPaints)) r.fill = convertPaints(e.fillPaints, { ...ctx, usage: () => undefined }, false);
+  if (Array.isArray(e.fillPaints)) {
+    // EMOJI paint: the characters are drawn as Figma's colour emoji images, not in a paint of their own
+    const own = (e.fillPaints as Any[]).filter((p) => p?.type !== 'EMOJI');
+    if (own.length < e.fillPaints.length) r.emoji = true;
+    if (own.length || !r.emoji) r.fill = convertPaints(own, { ...ctx, usage: () => undefined }, false);
+  }
   const link = linkOf(e.hyperlink);
   if (link) r.link = link;
   const t = styleRef(e.styleIdForText), f = styleRef(e.styleIdForFill);
@@ -304,33 +309,75 @@ function runStyle(e: Any, base: Any, ctx: Ctx): Omit<TextRun, 'i' | 'n'> | null 
   return Object.keys(r).length ? r : null;
 }
 
+/** Code points of an emoji style entry (EMOJI fill paint), as a string; undefined for other entries. */
+function emojiOf(e: Any): string | undefined {
+  const p = ((e?.fillPaints ?? []) as Any[]).find((x) => x?.type === 'EMOJI' && x.visible !== false);
+  const cps = (p?.emojiCodePoints ?? []) as number[];
+  if (!p) return undefined;
+  try { return cps.length ? String.fromCodePoint(...cps) : ''; } catch { return ''; }
+}
+
+/** what may follow an emoji's base code point inside the same emoji: presentation selectors, keycap, skin tone, tag characters, ZWJ + pictograph */
+const EMOJI_TAIL = /(?:[\uFE0E\uFE0F\u20E3]|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}]|\u200D\p{Extended_Pictographic})/uy;
+const EMOJI_PRESENTATION = /^\p{Emoji_Presentation}$/u;
+
 /**
- * Character ranges with their own style. `characterStyleIDs` holds one styleID per UTF-16 code unit of the characters (missing
- * trailing entries = 0); a non-zero id selects the `styleOverrideTable` entry with that `styleID`, 0 = the text's own style.
+ * Character ranges with their own style. `characterStyleIDs` holds one styleID per CODE POINT of the characters (missing
+ * trailing entries = 0; octopus Complex.fig 375:16: 11 ids for "👍 Emojito 🤣", 13 UTF-16 units); a non-zero id selects the
+ * `styleOverrideTable` entry with that `styleID`, 0 = the text's own style. The ranges are returned in UTF-16 units of the text.
  * `base` (the text node or override record) supplies the font size and the saved font metrics. Equal neighbours are merged.
+ * Emoji: Figma keeps one table entry per emoji with an EMOJI paint and its base code point(s); only its saved glyphs refer to it
+ * (not `characterStyleIDs`), so the characters are found by their code points and marked `emoji`, together with what belongs to
+ * the same emoji (variation selector, keycap, skin tone, tags, ZWJ sequence). A single code point without emoji presentation
+ * (⚠, ©, a keycap digit) counts only when an emoji selector (FE0F) or keycap (20E3) follows it.
  */
 export function textRuns(td: Any | undefined, base: Any, ctx: Ctx): TextRun[] {
   const chars: string = typeof td?.characters === 'string' ? td.characters : '';
-  const ids = (td?.characterStyleIDs ?? []) as number[];
+  const cpIds = (td?.characterStyleIDs ?? []) as number[];
   const table = (td?.styleOverrideTable ?? []) as Any[];
-  if (!chars || !ids.length || !table.length) return [];
+  if (!chars || !table.length) return [];
+  // style id per UTF-16 unit (both units of a surrogate pair take the id of their code point)
+  const ids: number[] = [];
+  if (cpIds.length) for (let u = 0, k = 0; u < chars.length && k < cpIds.length; k++) { const n = chars.codePointAt(u)! > 0xffff ? 2 : 1; for (let x = 0; x < n; x++) ids.push(cpIds[k] ?? 0); u += n; }
   const entries = new Map<number, Any>();
   for (const e of table) if (typeof e?.styleID === 'number' && e.styleID !== 0) entries.set(e.styleID, e);
+  const emo = new Uint8Array(chars.length);
+  let anyEmoji = false;
+  for (const [id, e] of entries) {
+    const seq = emojiOf(e);
+    if (seq === undefined) continue;
+    for (let i = 0; i < ids.length; i++) if (ids[i] === id) { emo[i] = 1; anyEmoji = true; }
+    if (!seq) continue;
+    const bare = [...seq].length === 1 && !EMOJI_PRESENTATION.test(seq);
+    for (let at = chars.indexOf(seq); at >= 0; at = chars.indexOf(seq, at + 1)) {
+      // inside a longer emoji that an earlier match already covers, or the low half of a surrogate pair
+      if (emo[at] || (at > 0 && /[\uD800-\uDBFF]/.test(chars[at - 1]))) continue;
+      let j = at + seq.length;
+      if (bare && !/[\uFE0F\u20E3]/.test(chars[j] ?? '')) continue;
+      for (EMOJI_TAIL.lastIndex = j; EMOJI_TAIL.test(chars); EMOJI_TAIL.lastIndex = j) j = EMOJI_TAIL.lastIndex;
+      emo.fill(1, at, j);
+      anyEmoji = true;
+    }
+  }
+  if (!ids.length && !anyEmoji) return [];
   const conv = new Map<number, Omit<TextRun, 'i' | 'n'> | null>();
   const out: TextRun[] = [];
-  const end = Math.min(chars.length, ids.length);
+  const end = anyEmoji ? chars.length : Math.min(chars.length, ids.length);
   for (let i = 0; i < end; ) {
     const id = ids[i] ?? 0;
+    const em = emo[i];
     let j = i + 1;
-    while (j < end && (ids[j] ?? 0) === id) j++;
+    while (j < end && (ids[j] ?? 0) === id && emo[j] === em) j++;
+    let st: Omit<TextRun, 'i' | 'n'> | null = null;
     if (id && entries.has(id)) {
       if (!conv.has(id)) conv.set(id, runStyle(entries.get(id)!, base, ctx));
-      const st = conv.get(id);
-      if (st) {
-        const prev = out[out.length - 1];
-        if (prev && prev.i + prev.n === i && JSON.stringify({ ...prev, i: 0, n: 0 }) === JSON.stringify({ i: 0, n: 0, ...st })) prev.n += j - i;
-        else out.push({ i, n: j - i, ...st });
-      }
+      st = conv.get(id) ?? null;
+    }
+    if (em) { st = { ...st, emoji: true }; delete st.fill; } else if (st?.emoji) { const { emoji: _e, ...rest } = st; void _e; st = Object.keys(rest).length ? rest : null; }
+    if (st) {
+      const prev = out[out.length - 1];
+      if (prev && prev.i + prev.n === i && JSON.stringify({ ...prev, i: 0, n: 0 }) === JSON.stringify({ i: 0, n: 0, ...st })) prev.n += j - i;
+      else out.push({ i, n: j - i, ...st });
     }
     i = j;
   }

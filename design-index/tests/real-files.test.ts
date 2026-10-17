@@ -206,3 +206,44 @@ describe.skipIf(!fileOf('stacks_wrap.fig'))('fig2sketch stacks_wrap.fig (Display
     expect(spec(db, '1:5')).toMatch(/^# colours: the document is Display-P3/m);
   });
 });
+
+// 0.1.5: emoji ranges, stroke paint blend modes
+describe.skipIf(!fileOf('Complex.fig'))('Complex.fig (0.1.5)', () => {
+  it('an EMOJI range (only the glyphs refer to it) is marked and drawn as a visible placeholder (375:15)', async () => {
+    const db = await open('Complex.fig');
+    expect(styles(db, '375:15').runs).toEqual([{ i: 0, n: 2, emoji: true }]);
+    expect(first(spec(db, '375:15'))).toContain('runs[0-2 "👍" emoji]');
+    const svg = renderSvg(db, '375:15', { assetsDir: '', format: 'fig' }).svg;
+    expect(svg).toMatch(/<tspan fill="#f5c33b">●<\/tspan> Small Button/);
+  });
+});
+
+describe.skipIf(!fileOf('Complex.fig'))('Complex.fig (0.1.5 review)', () => {
+  it('characterStyleIDs are per code point: 11 ids for "👍 Emojito 🤣" (375:16)', async () => {
+    const db = await open('Complex.fig');
+    expect(styles(db, '375:16').runs).toMatchObject([{ i: 0, n: 2, emoji: true }, { i: 2, n: 9, font: { w: 700 } }, { i: 11, n: 2, font: { w: 700 }, emoji: true }]);
+    expect(first(spec(db, '375:16'))).toContain('runs[0-2 "👍" font=Arial w400 emoji; 2-11 "Emojito" font=Arial w700; 11-13 "🤣" font=Arial w700 emoji]');
+  });
+});
+
+describe.skipIf(!fileOf('tds-components.fig'))('tds-components.fig', () => {
+  it('an emoji with a variation selector inside a font range (1363:4397)', async () => {
+    const db = await open('tds-components.fig');
+    expect(styles(db, '1363:4397').runs[0]).toMatchObject({ i: 0, n: 2, emoji: true });
+    expect(first(spec(db, '1363:4397'))).toMatch(/runs\[0-2 "⚠️" emoji; 125-156 "2021-07-16 \(July\): Donna Vitan" w700\]/);
+    expect(renderSvg(db, '1363:4397', { assetsDir: '', format: 'fig' }).svg).toContain('<tspan fill="#f5c33b">●</tspan>');
+  }, 120000);
+});
+
+describe.skipIf(!fileOf('google_material_design.fig'))('google_material_design.fig (raw fig-kiwi v2)', () => {
+  it('draws both gradient stroke paints, the second with soft-light (card 0:1020 in "search" 0:1019)', async () => {
+    const db = await open('google_material_design.fig');
+    expect(spec(db, '0:1019')).toMatch(/"card" path .*stroke=linear-gradient\([^)]*\)\+linear-gradient\([^)]*\)\|soft-light\/1\/inner/);
+    const svg = renderSvg(db, '0:1019', { assetsDir: '', format: 'fig' }).svg;
+    const card = /<g data-id="0:1020"[^>]*>(.*?)<\/g>/.exec(svg)![1];
+    const strokes = card.match(/<path [^>]*fill="none" stroke="url\(#g\d+\)"[^>]*>/g) ?? [];
+    expect(strokes).toHaveLength(2);
+    expect(strokes[0]).not.toContain('mix-blend-mode');
+    expect(strokes[1]).toContain('style="mix-blend-mode:soft-light"');
+  });
+});

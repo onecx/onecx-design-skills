@@ -150,7 +150,7 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (typeof raw?.usf === 'number') head.push(`scale=${Math.round(raw.usf * 1000) / 1000}`);
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
   if (s?.link) head.push(`link=${s.link}`);
-  if (n.type === 'text' && n.text && s?.runs?.length) { const rr = runsStr(c, n.text, s, modes); if (rr) head.push(rr); }
+  if (n.type === 'text' && n.text && s?.runs?.length) { const rr = runsStr(c, n.text, s, modes, n.w, n.h); if (rr) head.push(rr); }
   if (n.type === 'text' && raw?.list) head.push(`list=${raw.list}`);
   if (n.type === 'text' && raw?.textPath) head.push('on-path');
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
@@ -165,7 +165,7 @@ const fmtNum = (v: unknown) => (typeof v === 'number' ? Math.round(v * 1000) / 1
  * Character ranges with their own style: `runs[i-j "chars" <only what differs from the text's own style>; …]`. Indices are UTF-16
  * offsets into `text=` (end exclusive). A range that equals the text's own style is left out.
  */
-function runsStr(c: Ctx, text: string, s: Styles, modes?: string[]): string {
+function runsStr(c: Ctx, text: string, s: Styles, modes?: string[], w?: number | null, h?: number | null): string {
   const base = s.font ?? {};
   const parts: string[] = [];
   let more = 0;
@@ -182,7 +182,8 @@ function runsStr(c: Ctx, text: string, s: Styles, modes?: string[]): string {
     if ('ls' in f && !same('ls')) d.push(`ls${f.ls ?? 0}`);
     if ('deco' in f && !same('deco')) d.push(f.deco ? String(f.deco) : 'no-decoration');
     if ('case' in f && !same('case')) d.push(`case=${f.case ?? 'none'}`);
-    if (r.fill && JSON.stringify(r.fill) !== JSON.stringify(s.fill ?? [])) d.push(`color=${paintsSpec(c, r.fill, modes) || 'none'}`);
+    if (r.emoji) d.push('emoji');
+    if (r.fill && JSON.stringify(r.fill) !== JSON.stringify(s.fill ?? [])) d.push(`color=${paintsSpec(c, r.fill, modes, w, h) || 'none'}`);
     if (r.link && r.link !== s.link) d.push(`link=${r.link}`);
     if (r.sty && Object.keys(r.sty).length) d.push(`styles{${Object.entries(r.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
     if (!d.length) continue;
@@ -267,7 +268,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       return !!(st?.runs?.length || st?.link || st?.blend || st?.font?.trim || bm(st?.fill) || bm(st?.stroke?.paints) || rw?.revZ || typeof rw?.usf === 'number');
     });
     if (usesNew)
-      out.push('# runs[i-j "chars" …] = character range [i,j) of text= with its own style (only what differs; <span>) · link= hyperlink (URL or #node-id) · blend=mode / paint|mode = mix-blend-mode / background-blend-mode · trim=cap = text box trimmed to cap height and baseline (CSS text-box: trim-both cap alphabetic) · z-reverse = earlier children are painted on top of later ones (CSS: descending z-index) · scale=F on an instance = Figma scaled its component by F: every value below is already scaled');
+      out.push('# runs[i-j "chars" …] = character range [i,j) of text= with its own style (only what differs; <span>); emoji = colour emoji characters (keep them as text, no text colour applies) · link= hyperlink (URL or #node-id) · blend=mode / paint|mode = mix-blend-mode / background-blend-mode · trim=cap = text box trimmed to cap height and baseline (CSS text-box: trim-both cap alphabetic) · z-reverse = earlier children are painted on top of later ones (CSS: descending z-index) · scale=F on an instance = Figma scaled its component by F: every value below is already scaled');
     if (getMeta(db, 'color_profile') === 'DISPLAY_P3') out.push(`# ${P3_NOTE}`);
     if (classes.size) {
       out.push('# Classes (repeated styles):');

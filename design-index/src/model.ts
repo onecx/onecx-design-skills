@@ -29,6 +29,8 @@ export interface TextRun {
   tsid?: string; fsid?: string;
   /** the range sets its font fields over its text style (Figma isOverrideOverTextStyle) */
   ovr?: boolean;
+  /** the characters are emoji, drawn by Figma as colour emoji images (EMOJI paint), not in a text colour */
+  emoji?: boolean;
 }
 
 export interface Styles {

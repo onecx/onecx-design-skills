@@ -77,7 +77,8 @@ Notes
 sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs,
 and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms)
 and 0.1.4 (mixed text styles and links, uniform instance scale, blend modes, angular/diamond gradients, mask types, Display-P3, explicit modes for numbers/text,
-non-unique property definition ids, blobs before nodes).
+non-unique property definition ids, blobs before nodes), and 0.1.5 (`tests/fig-limits.test.ts`: gradient/image/emoji text ranges, stroke paint blend modes,
+auto layout under an explicit variable mode).
 Manual runs against real client files (not part of this repository) and the synthetic 100/200/400 MB files: see the table above.
 An end-to-end check implemented four real frames in React and Angular (pixel-identical results, 2.8-11.6 % pixel difference to the offline design render); that material contains client assets and is kept out of this repository.
 
@@ -86,12 +87,28 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
 - .fig instances from libraries that are not inside the file are drawn as boxes; instance resizing without Figma's saved layout is not re-laid out.
 - .fig `screenshot` approximations: angular gradients (a fan of wedges), Figma-only blend modes `linear-burn`/`linear-dodge` (drawn as multiply/screen),
   cap-height trim (cap height taken as 0.7 × font size), a thinner stroke-weight override on an outline icon without a saved outline (drawn at the component weight),
-  gradient/image fills of text ranges (only solid range colours are drawn), stroke paint blend modes (printed, not drawn). Display-P3 files: images stay P3.
+  emoji (yellow placeholder discs: no colour emoji font offline), vector strokes are centred on the outline (Figma's inside/outside alignment is not applied to paths).
+  Auto layout under an explicit variable mode is re-solved only where the mode changes a bound gap, padding or size (children keep their saved sizes unless
+  they fill; text is not re-measured; wrapping and grid layouts keep their saved positions). Display-P3 files: images stay P3.
 - `.pen` schema 2.21 is the documented reference; other versions are read with warnings (2.18 was tested).
 - Heuristics (screen detection, purpose, flows, audit) are guesses and are always marked; they exist to produce questions, not facts.
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
 
 ## Changelog
+- **0.1.5** — the last three `.fig` limits of 0.1.4.
+  - Text ranges with non-solid paints: gradient and image range fills are drawn on the range's `<tspan>` (paint server over the text box) and printed in
+    `runs[…color=linear-gradient(…)]` / `color=img(…)`. Emoji: Figma stores one style entry per emoji with an EMOJI paint and the code points, referred to
+    only by its saved glyphs; the characters are found by their code points (variation selector included) and marked `emoji` in `runs[…]` (`spec`),
+    drawn as a yellow disc instead of a glyph in the text colour (octopus Complex `375:15`, tds-components `1363:4397`). Skin tones, keycaps, tags and
+    ZWJ sequences stay one emoji; a character without emoji presentation (⚠, ©, a digit) counts only with an emoji selector or keycap after it.
+  - Fix: `characterStyleIDs` hold one id per **code point**, not per UTF-16 unit (Complex `375:16`: 11 ids for "👍 Emojito 🤣", 13 units). 0.1.4 read
+    them per UTF-16 unit, which shifted every range after an emoji or other astral character. Ranges are still printed in UTF-16 units of `text=`.
+  - Strokes: every stroke paint is drawn (bottom to top: solid, gradient, image), each with its own blend mode, on rectangles, ellipses, per-side borders, lines
+    and vectors (fig2sketch google_material_design `0:1020`: two gradient strokes, the second soft-light). Before, only the first solid stroke paint was drawn.
+  - Explicit variable modes on layout: a bound `gap`, padding, width/height or min/max size whose mode value differs from the saved one re-lays out that
+    auto-layout container (the pen solver's rules on Figma's saved child sizes; hug sizes recomputed, fill children resized) and its auto-layout ancestors;
+    everything else keeps Figma's saved geometry. `spec` is unchanged (`gap=$token{24}`).
+  - Index schema 25 (re-ingest happens automatically).
 - **0.1.4** — the `.fig` findings 0.1.3 left open (same research report).
   - Mixed text styles: `characterStyleIDs` + `styleOverrideTable` become ranges (`runs[6-9 "big" w700 underline color=… link=…]` in `spec`, one
     `<tspan>` per range in `screenshot`), including each range's own text/fill style (material3 link ranges are purple via "M3/sys/light/primary",
