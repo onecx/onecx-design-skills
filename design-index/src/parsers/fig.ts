@@ -5,9 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import yauzl from 'yauzl';
-import type { Sink } from '../model.js';
 import { AssetWriter } from '../assets.js';
 import { timed } from '../util.js';
+import { safeJson } from '../output.js';
+import type { Sink, Styles } from '../model.js';
+import type { StyleDef, StyleUse } from './fig-convert.js';
+import { applyStyleUse, resolveOverrideStyles } from './fig-styles.js';
+import { VarLookup } from '../tokens.js';
 
 export interface FigOptions {
   file: string; assetsDir: string; sink: Sink;
@@ -119,7 +123,10 @@ export async function parseFig(opts: FigOptions): Promise<void> {
           Atomics.add(ackArr, 0, 1); Atomics.notify(ackArr, 0);
           opts.onPeak?.(process.memoryUsage().rss);
           break;
-        case 'progress': opts.onStage?.('decode', m.frac); opts.onPeak?.(process.memoryUsage().rss); break;
+        case 'progress':
+          opts.onStage?.('decode', m.frac); opts.onPeak?.(process.memoryUsage().rss);
+          if (process.env.DESIGN_INDEX_DEBUG) { const mu = process.memoryUsage(); process.stderr.write(`[mem] ${Math.round(m.frac * 100)}% worker heap ${m.heapMB} MB, main heap ${Math.round(mu.heapUsed / 1e6)} MB, external ${Math.round(mu.external / 1e6)} MB, rss ${Math.round(mu.rss / 1e6)} MB\n`); }
+          break;
         case 'done': finished = true; Atomics.add(ackArr, 0, 1); Atomics.notify(ackArr, 0); resolve(m); break;
         case 'error': finished = true; reject(new Error(m.message)); break;
       }
@@ -167,22 +174,49 @@ export async function parseFig(opts: FigOptions): Promise<void> {
   }
   sink.exec('COMMIT');
 
-  // overrides that point to a shared text style: copy the style's font values into the override
-  const sf = done.styleFonts as Record<string, Record<string, unknown>>;
-  const withSid = sink.query<{ id: string; raw: string }>(`SELECT id, raw FROM nodes WHERE type = 'instance' AND raw LIKE '%"sid"%'`);
-  sink.exec('BEGIN');
-  for (const r of withSid) {
-    const raw = JSON.parse(r.raw);
-    let changed = false;
-    for (const o of raw.overrides ?? []) {
-      if (!o.sid) continue;
-      const font = sf[o.sid];
-      if (font) { o.st = { ...(o.st ?? {}), font: { ...font, ...(o.st?.font ?? {}) } }; changed = true; }
-      delete o.sid;
+  // shared styles (text/fill/stroke/effect): the style record's values win over the node's inline copies, which are stale caches
+  const defs = done.styleDefs as Record<string, StyleDef>;
+  const uses = done.styleUses as [string, StyleUse][];
+  timed('fig:styles', () => {
+    for (let i = 0; i < uses.length; i += 500) {
+      const chunk = uses.slice(i, i + 500);
+      const rows = sink.query<{ id: string; styles: string | null; raw: string | null }>(`SELECT id, styles, raw FROM nodes WHERE id IN (${chunk.map(() => '?').join(',')})`, ...chunk.map((c) => c[0]));
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      sink.exec('BEGIN');
+      for (const [id, use] of chunk) {
+        const r = byId.get(id);
+        if (!r) continue;
+        const st = applyStyleUse(safeJson<Styles>(r.styles) ?? {}, safeJson<Record<string, unknown>>(r.raw), use, defs);
+        sink.run('UPDATE nodes SET styles = ? WHERE id = ?', Object.keys(st).length ? JSON.stringify(st) : null, id);
+      }
+      sink.exec('COMMIT');
     }
-    if (changed) sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id);
+  });
+
+  // text bound to a variable shows the variable's value (default mode)
+  const vl = new VarLookup((id) => sink.query<{ vals: string }>('SELECT vals FROM variables WHERE id = ? OR guid = ? LIMIT 1', id, id)[0]?.vals);
+  sink.exec('BEGIN');
+  for (const [id, v] of done.textVars as [string, string][]) {
+    const t = vl.string(v);
+    if (t !== undefined) sink.run('UPDATE nodes SET text = ? WHERE id = ?', t, id);
   }
   sink.exec('COMMIT');
+
+  // overrides that point to shared styles: copy the style's values into the override (they win over its inline values)
+  let last = 0;
+  for (;;) {
+    const batch = sink.query<{ rid: number; id: string; raw: string }>(`SELECT rowid rid, id, raw FROM nodes WHERE rowid > ? AND type = 'instance' AND raw LIKE '%sid"%' ORDER BY rowid LIMIT 2000`, last);
+    if (!batch.length) break;
+    last = batch[batch.length - 1].rid;
+    sink.exec('BEGIN');
+    for (const r of batch) {
+      const raw = JSON.parse(r.raw);
+      let changed = false;
+      for (const o of raw.overrides ?? []) if (resolveOverrideStyles(o, defs)) changed = true;
+      if (changed) sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id);
+    }
+    sink.exec('COMMIT');
+  }
 
   const s = done.stats;
   sink.meta('fig_version', String(s.version));

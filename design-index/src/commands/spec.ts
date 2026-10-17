@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
 import type { Layout, Paint, Styles } from '../model.js';
-import { Out, layoutStr, paintStr, q, safeJson, sizeStr } from '../output.js';
+import { Out, gradientStr, layoutStr, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
 import { compLabel, requireNode, type NodeRec } from './structure.js';
@@ -22,7 +22,7 @@ const VECTOR_TYPES = new Set(['path', 'line', 'polygon', 'ellipse', 'boolean']);
 
 interface Ctx { db: DatabaseSync; tokens: TokenIndex; assets: Map<string, { path: string; mime: string }>; includeHidden: boolean }
 
-function paintsSpec(c: Ctx, ps: Paint[] | undefined, modes?: string[]): string {
+function paintsSpec(c: Ctx, ps: Paint[] | undefined, modes?: string[], w?: number | null, h?: number | null): string {
   if (!ps?.length) return '';
   return ps.map((p) => {
     if (p.k === 'solid' && !p.v && p.c) {
@@ -37,53 +37,109 @@ function paintsSpec(c: Ctx, ps: Paint[] | undefined, modes?: string[]): string {
     }
     if (p.k === 'img') {
       const a = p.asset ? c.assets.get(p.asset) : undefined;
-      return a ? `img(${a.path}${p.mode && p.mode !== 'cover' ? ',' + p.mode : ''})` : `img(missing:${p.url ?? '?'})`;
+      return a ? `img(${a.path}${p.mode && p.mode !== 'cover' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})` : `img(missing:${p.url ?? '?'})`;
     }
+    if (p.k === 'grad') return gradientStr(p, w, h, (col) => { const t = col.startsWith('#') ? c.tokens.hexMatch(col) : undefined; return t ? `${col}(=$${t}?)` : col; });
     return paintStr(p);
   }).join('+');
+}
+
+/** Keys of Styles.vars that are printed in place of the value they bind (gap, padding, radius, font) instead of separately. */
+const INLINE_VARS = new Set(['gap', 'pad-top', 'pad-right', 'pad-bottom', 'pad-left', 'radius', 'r-tl', 'r-tr', 'r-br', 'r-bl', 'font-size', 'font-family', 'line-height', 'letter-spacing', 'text']);
+
+/** Radius binding: one token for all corners or per corner (tl,tr,br,bl); unbound corners keep their number. */
+function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r']): string | undefined {
+  const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => v[k] ?? v.radius);
+  if (!corners.some(Boolean)) return undefined;
+  const nums = Array.isArray(r) ? r : [r ?? 0, r ?? 0, r ?? 0, r ?? 0];
+  const names = corners.map((x, i) => (x ? `$${c.tokens.nameFor(x)}` : String(nums[i] ?? 0)));
+  return new Set(names).size === 1 ? names[0] : names.join(',');
 }
 
 function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): string[] {
   const p: string[] = [];
   if (!s) return p;
   const isText = n.type === 'text';
-  if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill, modes)}`);
-  if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints, modes)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}`);
-  if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
+  const raw = safeJson<Record<string, unknown>>(n.raw);
+  if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill, modes, n.w, n.h)}`);
+  if (raw?.geometryFrom === 'stroke' && typeof raw.outlineW === 'number') p.push(`(outline of a ${raw.outlineW}px stroke)`);
+  if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints, modes, n.w, n.h)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}${s.stroke.dash?.length ? `/dash${s.stroke.dash.join(',')}` : ''}`);
+  const rv = s.vars && n.type !== 'path' && n.type !== 'boolean' && n.type !== 'polygon' ? radiusVar(c, s.vars, s.r) : undefined;
+  if (rv) p.push(`r=${rv}`);
+  else if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
   if (s.op != null) p.push(`op=${s.op}`);
   if (s.clip) p.push('clip');
   if (s.rot) p.push(`rot=${s.rot}`);
+  if (s.flip) p.push(`flip=${s.flip}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `${e.inner ? 'inset-' : ''}shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.spread ? ',' + e.spread : ''},${e.c ?? '#000'})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
-  if (s.vars) p.push(...Object.entries(s.vars).map(([k, v]) => `${k}=$${c.tokens.nameFor(v)}`));
+  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=$${c.tokens.nameFor(v)}`));
+  if (s.vars?.text && isText) p.push(`text-token=$${c.tokens.nameFor(s.vars.text)}`);
+  if (s.sty) p.push(`styles{${Object.entries(s.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
   return p;
 }
 
-function fontStr(s: Styles | null): string {
+function fontStr(c: Ctx, s: Styles | null): string {
   const f = s?.font;
   if (!f) return '';
-  return 'font=' + [f.f, f.s, f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : null, f.lh != null ? `lh${typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : f.lh}` : null,
-    f.ls != null ? `ls${typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : f.ls}` : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
+  const v = s?.vars ?? {};
+  const tok = (k: string) => (v[k] ? `$${c.tokens.nameFor(v[k])}` : undefined);
+  const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : f.lh) : undefined);
+  const ls = tok('letter-spacing') ?? (f.ls != null ? (typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : f.ls) : undefined);
+  const font = 'font=' + [tok('font-family') ?? f.f, tok('font-size') ?? f.s, f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : null, lh != null ? `lh${lh}` : null,
+    ls != null ? `ls${ls}` : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
+  return [font, ...textAttrs(f)].join(' ');
+}
+
+const PIN_H: Record<string, string> = { MAX: 'right', CENTER: 'center-x', STRETCH: 'left+right', SCALE: 'scale-x' };
+const PIN_V: Record<string, string> = { MAX: 'bottom', CENTER: 'center-y', STRETCH: 'top+bottom', SCALE: 'scale-y' };
+
+/** Visual bounding box of a rotated or mirrored node in its parent (the @x,y origin is a corner of the unrotated box). */
+function visualBox(n: NodeRec, s: Styles | null, raw: Record<string, unknown> | null): string | undefined {
+  if (!s?.rot && !s?.flip && !raw?.m) return undefined;
+  const m = (raw?.m as number[] | undefined) ?? (() => { const a = (-(s?.rot ?? 0) * Math.PI) / 180; return [Math.cos(a), -Math.sin(a), Math.sin(a), Math.cos(a)]; })();
+  const w = n.w ?? 0, h = n.h ?? 0, x = n.x ?? 0, y = n.y ?? 0;
+  const pts = [[0, 0], [w, 0], [0, h], [w, h]].map(([px, py]) => [x + m[0] * px + m[1] * py, y + m[2] * px + m[3] * py]);
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const r = (v: number) => Math.round(v * 100) / 100;
+  return `visual@${r(Math.min(...xs))},${r(Math.min(...ys))} ${r(Math.max(...xs) - Math.min(...xs))}×${r(Math.max(...ys) - Math.min(...ys))}`;
 }
 
 function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean, geomKey: string | undefined, modes?: string[]): { head: string; style: string } {
   const l = safeJson<Layout>(n.layout);
   const s = safeJson<Styles>(n.styles);
+  const raw = safeJson<Record<string, unknown>>(n.raw);
   const head: string[] = [q(n.name, 50), n.type];
   const sz = sizeStr(n.w, n.h, l);
   if (sz) head.push(sz);
   const absPos = parentAbs || l?.abs || !parent;
   if (absPos && parent && n.x != null && n.y != null && (n.x || n.y)) head.push(`@${Math.round(n.x * 100) / 100},${Math.round(n.y * 100) / 100}`);
-  const ls = layoutStr(l ? { ...l, w: undefined, h: undefined, abs: undefined } : null);
+  if (absPos && parent) { const vb = visualBox(n, s, raw); if (vb) head.push(vb); }
+  if (absPos && parent && (raw?.hConstraint || raw?.vConstraint)) {
+    const pins = [PIN_H[String(raw.hConstraint)], PIN_V[String(raw.vConstraint)]].filter(Boolean);
+    if (pins.length) head.push(`pin=${pins.join(',')}`);
+  }
+  // bound gap/padding print the token instead of the number
+  let lv: Layout | null = l ? { ...l, w: undefined, h: undefined, abs: undefined } : null;
+  const v = s?.vars;
+  if (lv && v) {
+    const tok = (k: string) => (v[k] ? `$${c.tokens.nameFor(v[k])}` : undefined);
+    if (v.gap && lv.gap !== undefined) lv.gap = tok('gap');
+    const sides = ['pad-top', 'pad-right', 'pad-bottom', 'pad-left'];
+    if (sides.some((k) => v[k])) lv = { ...lv, pad: sides.map((k, i) => tok(k) ?? (lv!.pad?.[i] ?? 0)) as unknown as number[] };
+  }
+  const ls = layoutStr(lv);
   if (ls) head.push(ls);
   else if ((n.type === 'frame' || n.type === 'component') && n.nchild > 0 && !l?.dir) head.push('children-abs');
   if (l?.abs) head.push('abs');
+  if (raw?.mask) head.push(raw.maskType && raw.maskType !== 'ALPHA' ? `mask(${String(raw.maskType).toLowerCase()})` : 'mask');
   if (n.component_ref) head.push(`→${compLabel(c.db, n.component_ref)}`);
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
-  const raw = safeJson<Record<string, unknown>>(n.raw);
+  if (n.type === 'text' && raw?.list) head.push(`list=${raw.list}`);
+  if (n.type === 'text' && raw?.textPath) head.push('on-path');
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
   if (VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n, geomKey)}`);
   if (!n.visible) head.push('(hidden)');
-  const style = [...styleParts(c, n, s, modes), fontStr(s)].filter(Boolean).join(' ');
+  const style = [...styleParts(c, n, s, modes), fontStr(c, s)].filter(Boolean).join(' ');
   return { head: head.join(' '), style };
 }
 
@@ -117,7 +173,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     try { tree = ev.build(root); } catch (e) { if (e instanceof TooBig) throw TOO_BIG; throw e; }
     const parentIsAbs = (p: NodeRec): boolean => {
       const l = safeJson<Layout>(p.layout);
-      return p.type === 'group' || !l?.dir;
+      return p.type === 'group' || !l?.dir || l.dir === 'grid';
     };
     const walk = (v: VNode, d: number, parent: NodeRec | null, inh: string[] = []): void => {
       const eff = v.modes ? [...inh, ...v.modes.map((m) => m.split('=').slice(1).join('='))] : inh;
@@ -150,7 +206,9 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     out.push(c.tokens.empty
       ? '# no design tokens in the file: take values (hex, px) as constants/variables from tokens.css, do not invent them'
       : '# $name = CSS variable var(--name) from `tokens`; "(=$x?)" = value equals token x but is not bound in the file (please verify)');
-    out.push('# Sizes: fill=fills parent, hug=fits content, number=fixed · @x,y only inside absolutely positioned parents · row/col = flex direction');
+    out.push('# Sizes: fill=fills parent, hug=fits content, number=fixed · @x,y only inside absolutely positioned parents (incl. group, grid) · row/col = flex direction');
+    if (lines.some((l) => /\bpin=|\brot=|\bflip=|\bmask\b|\bgrid\b/.test(l.head + ' ' + l.style)))
+      out.push('# pin=right|center-x|left+right|scale-x,bottom|center-y|top+bottom|scale-y: constraint of an @x,y layer (left/top when absent) · rot=deg counter-clockwise about @x,y · flip=x|y mirrored in its own box before rotating (CSS: transform-origin:0 0; transform:rotate(-deg) scaleX(-1)|scaleY(-1)) · visual@ = resulting box · mask = clips the following siblings, not drawn · grid = CSS grid, children at their saved @x,y');
     if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`)');
     if (classes.size) {
       out.push('# Classes (repeated styles):');

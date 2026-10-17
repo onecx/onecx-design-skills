@@ -72,8 +72,10 @@ Notes
   Exception to be aware of: `screenshot` needs about 1 s (WASM start, fonts).
 
 ## Tests
-`npm test`: 18 vitest tests on small generated fixtures (no client data): comments/unknown fields/unknown node types in .pen, streamed data-URI images, hashing/cache skip,
-sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs.
+`npm test`: vitest tests on small generated fixtures (no client data); with `DESIGN_INDEX_FIXTURES=<folder>` also oracle checks against public real Figma exports
+(`design-index/tests/fixtures/README.md` lists the downloads and licences). Generated-fixture coverage: comments/unknown fields/unknown node types in .pen, streamed data-URI images, hashing/cache skip,
+sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs,
+and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms).
 Manual runs against real client files (not part of this repository) and the synthetic 100/200/400 MB files: see the table above.
 An end-to-end check implemented four real frames in React and Angular (pixel-identical results, 2.8-11.6 % pixel difference to the offline design render); that material contains client assets and is kept out of this repository.
 
@@ -85,6 +87,32 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
 
 ## Changelog
+- **0.1.3** — `.fig` field semantics checked against what Figma itself saved in 31 real files (laid-out sizes, saved glyph fonts, outlines); see the research report referenced in the PR.
+  - Auto layout: a missing `stackPrimarySizing` means **hug** (hug buttons/chips were reported fixed); missing right/bottom padding is 0 (was mirrored);
+    `SPACE_EVENLY` is Figma's space-between (`jc=between`, gap ignored, a single child is centred); `SPACE_AROUND`/`SPACE_EVENLY_CSS` → `around`/`evenly`;
+    `GRID` frames are `grid` (children keep their saved positions) instead of a column.
+  - Text: line height `{100, PERCENT}` is the font's normal line height (no `lh`, was `lh1`), `RAW` is a multiplier (was dropped), other percentages are
+    relative to the font's natural height. Text case, vertical alignment, truncation (`truncate lines=N`), list markers (`list=`) are printed; "Italic" is weight 400;
+    Figma's saved font weight wins.
+  - Shared styles: `styleIdForText/Fill/StrokeFill/Effect` are resolved on every node and override (the style wins over stale inline values; style names are
+    printed as `styles{…}`). Example: material3 texts drawn in Roboto were reported as "Google Sans Text".
+  - Instance overrides: every override with a rendering field is kept (size-only, fill/stroke style swaps, stroke weight/align/dash, border sides, per-corner radii,
+    opacity, effects, text fields, auto-layout fields, variable bindings); absent fields inherit. A stroke colour override on an outline icon recolours the outline
+    (was drawn in the component colour); saved instance outlines are used unscaled, including stroke outlines.
+  - Variable bindings on numbers and text (`variableConsumptionMap` + `parameterConsumptionMap`): `gap=$token`, `pad=$token`, `r=$token`, font tokens, `width=$…`;
+    text bound to a variable shows the variable's value (binding beats stale literal overrides, a bare entry clears it). Component-property refs and defaults of newer
+    files (`PROP_REF`, `varValue`) are read; slot content is expanded.
+  - Corners: the independent flag decides (absent corner = 0); no `r=` on vectors. Groups (`FRAME` + `resizeToFit`) are `group` and never clip.
+    Masks are marked (`mask`) and clip the following siblings in `screenshot`. Mirrored nodes keep their matrix (`flip=x|y`, `visual@…`); `rot` is documented
+    (counter-clockwise about the top-left origin); rotated vectors export inside their bounds. Constraints of absolutely positioned layers are printed (`pin=…`).
+  - Renderer/spec: per-region vector fills and winding rules, ellipse arcs and polygon counts from Figma's outlines, gradient direction and stops as CSS,
+    image crop (Kiwi `STRETCH`) and image opacity, dash patterns; unknown effect types (noise, grain, …) are ignored instead of becoming a blur; slices are
+    not listed; text on a path is extracted; `fig-deck` files are accepted (with a warning) and the header versions decoded in the real-file checks (1, 2, 3, 4, 10, 15, 20, 25, 48, 63, 80, 87, 101, 106) no longer warn; other versions still do.
+  - Tests: synthetic fixtures now use Figma's own field names and omissions (`tests/fig-semantics.test.ts`); optional oracle checks against real exports
+    (`tests/real-files.test.ts`, download list in `design-index/tests/fixtures/README.md`; no `.fig` file is committed).
+  - nuxtui (82 MB, 313k nodes): ingest 29–34 s → 34–38 s, peak RSS 1.21 GB → 1.25–1.48 GB (run-to-run spread; worker heap at end of stream 290–470 MB). The extra work is the
+    style/variable resolution after the stream; second-pass statements are now prepared once.
+  - Index schema version 23: re-run `ingest --force` on existing caches.
 - **0.1.2**
   - `.fig` corner radius: per-corner values without `cornerRadius` and without the "independent" flag are not drawn (Figma shows them square; 369 nodes in the test export, all 100). Fixes pill-shaped buttons that are rectangular in Figma.
   - `.fig` strokes: per-side widths are read from `borderTopWeight…` / `borderStrokeWeightsIndependent` (was read from wrong field names, which drew a box on all sides). An occurrence whose saved stroke outline is empty has no stroke.

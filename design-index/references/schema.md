@@ -7,7 +7,8 @@ queried directly (always go through `design-query`).
 | Table | Content |
 |---|---|
 | `nodes` | `id, parent_id, page, type, name, depth, ord, x, y, w, h, layout JSON, styles JSON, text, component_ref, visible, evis, raw JSON, nchild` |
-| `geometry` | `node_id, data` (SVG path for vectors; only used by `assets export`/`screenshot`) |
+| `geometry` | `node_id, data`: SVG path data, or JSON `[[d, rule, styleID], …]` when regions have their own paint or winding rule (fig). Only used by `assets export`/`screenshot` |
+| `derived` | fig: Figma's saved layout of instance content per override path: `inst, p, w, h, x, y, geom` (fill outline key), `sg` (stroke outline key), `ns` (empty stroke outline) |
 | `pages` | `idx, id, name, node_count, screen_count, internal` (pen: top-level frames; fig: canvas pages) |
 | `components` | `id, name, page, description, set_id, set_name, variant JSON, props JSON, instances` |
 | `variables` | `id, name, collection, type, vals JSON {mode: value\|"alias:<id>"}, guid` |
@@ -26,13 +27,16 @@ queried directly (always go through `design-query`).
 `instance.component_ref` points to `components.id`; a component set (fig) is a frame with `raw.isComponentSet`.
 
 ## `layout` (JSON, defaults are omitted)
-`dir` row|col · `gap` · `pad` [top, right, bottom, left] · `jc` center|end|between|around · `ai` center|end|stretch|baseline ·
+`dir` row|col|grid (grid: children keep saved positions) · `gap` · `pad` [top, right, bottom, left] · `jc` center|end|between|around|evenly · `ai` center|end|stretch|baseline ·
 `wrap` · `abs` (absolutely positioned) · `w`/`h` = `"fill"` | `"hug"` | number (sizing rule of the node inside its parent).
 
 ## `styles` (JSON)
-- `fill`: `[{k:"solid", c:"#rrggbb[aa]", v:"<token>"}, {k:"grad", t, stops, a}, {k:"img", asset:"<hash>", mode}]`
-- `stroke`: `{paints, w (number or [t,r,b,l]), align}` · `r` radius (number or 4 values) · `op` · `clip` · `rot`
-- `fx`: shadows/blur · `font`: `{f, s, w, lh (factor), ls, al, st, deco, case}` · `vars`: bound numeric variables
+- `fill`: `[{k:"solid", c:"#rrggbb[aa]", v:"<token>"}, {k:"grad", t (linear|radial|angular|diamond), stops, a, p (handles, node-normalized: linear [x1,y1,x2,y2], others [cx,cy,ax,ay,bx,by])}, {k:"img", asset:"<hash>", mode (cover|contain|crop|tile|stretch), tf (crop transform), o (opacity)}]`
+- `stroke`: `{paints, w (number or [t,r,b,l]), align, dash}` · `r` radius (number or [tl,tr,br,bl]; never on vectors) · `op` · `clip`
+- `rot` (degrees, counter-clockwise about the top-left origin) · `flip` x|y (mirrored before rotating; the full matrix is in `raw.m`)
+- `fx`: shadows/blur (`blur` = Figma radius) · `font`: `{f, s, w, lh (factor; absent = normal), ls, al, st, deco, case, va (center|bottom), trunc (true or max lines), nlh (font's natural line height factor)}`
+- `vars`: bound variables by field (`gap`, `pad-top|right|bottom|left`, `radius`, `r-tl|tr|br|bl`, `width`, `height`, `min-/max-width|height`, `font-family`, `font-size`, `font-style`, `line-height`, `letter-spacing`, `opacity`, `stroke-weight`, `border-*`, `text`, …) → variable id
+- `sty`: names of the shared styles the values come from (`text`, `fill`, `stroke`, `effect`)
 - `v` refers to `variables.id`/`guid`; the name is in `variables.name`, the CSS variable is `--<name-in-kebab-case>`.
 
 ## Format specifics
@@ -40,4 +44,9 @@ queried directly (always go through `design-query`).
   Components = `reusable`, instances = `type: ref` + `descendants` (overrides). Images: `url` relative to the file, or base64.
 - **.fig** (ZIP with `canvas.fig`, `meta.json`, `images/`): Kiwi schema + zstd/deflate. Positions are computed (transform relative to the
   parent). Instances have no children, their content comes from `component_ref` plus `raw.overrides`/`raw.props`.
-  Pages = canvases; "Internal Only Canvas" (`pages.internal=1`) holds variables/library parts.
+  Pages = canvases; "Internal Only Canvas" (`pages.internal=1`) holds variables/library parts and shared styles.
+  Groups are FRAME + `resizeToFit` (type `group`). `raw`: `mask`, `maskType`, `hConstraint`/`vConstraint` (non-MIN constraints incl. SCALE),
+  `m` (2×2 matrix of mirrored/skewed nodes), `list` (list marker per line), `regions` (paints per vector region), `arc`, `polygonCount`,
+  `geometryFrom: "stroke"` + `outlineW` (stroke-only vector drawn as its filled outline). Override records (`raw.overrides[]`) carry `p` (path),
+  `t`, `hidden`/`show`, `swap`, `pa`, `st` (styles), `sp` (stroke width/align/dash/border sides), `rc` (corner fields), `lo` (auto-layout
+  and text-resize fields in Figma's names), `sz`, `vm`, `vb` (variable bindings, null = cleared).

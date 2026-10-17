@@ -55,6 +55,17 @@ no `r=` = square corners (radius 0): never round a box on your own · `hug(N)` t
 `spec` shows the content of an instance below it (taken from its component, with the instance's text, style, visibility and swap overrides applied).
 Lines starting with `# hidden` / `# text value(s) not placed` list things `spec` could not show: ASK THE USER about them, never drop or invent them.
 
+More notation (mostly `.fig`):
+- Layout: `jc=between` (single child: centred) / `around` / `evenly` = `justify-content: space-between|space-around|space-evenly`; no `gap=` then. `grid` = CSS grid in the design: children are listed with their saved `@x,y`, rebuild the grid from them. `group` = plain grouping, no box, never clips, no layout.
+- Position: `rot=D` = rotated D degrees **counter-clockwise** about the top-left origin `@x,y` (CSS: `transform-origin: 0 0; transform: rotate(-Ddeg)`). `flip=x|y` = mirrored in its own box before rotating (CSS: `scaleX(-1)` / `scaleY(-1)` after the rotate). `visual@x,y W×H` = the resulting box on screen.
+- `pin=right|center-x|left+right|scale-x,bottom|center-y|top+bottom|scale-y` = constraint of an `@x,y` layer when its parent resizes (absent = left/top). E.g. `pin=right` → `right: <parentW - x - w>px`.
+- `mask` = this layer is not drawn; it clips the siblings that follow it (CSS `mask`/`clip-path` or `overflow:hidden` + radius on a wrapper).
+- Text: no `lh` = the font's normal line height (`line-height: normal`); `lh1.4` = multiplier. `case=upper|lower|title` = `text-transform` (the text is shown in source case). `valign=center|bottom` = vertical alignment in a fixed-height box. `truncate` = one-line ellipsis, `truncate lines=N` = clamp to N lines with ellipsis. `list=ul,ul2,-` = list marker per line (`ul`/`ol`, level, `-` = plain); markers are not in `text=`.
+- `styles{text:"…",fill:"…"}` = the shared Figma style the values come from (use it as the name of a text/colour style). `text-token=$x` = the text is bound to a variable.
+- Tokens in place of numbers: `gap=$space-2`, `pad=$space-4`, `r=$radius-md`, `font=$font-family/…`; other bound values are listed as `width=$x`, `opacity=$x`.
+- Paints: `linear-gradient(90deg, #fff 0%, #000 100%)` is ready-to-use CSS (angle and stops from the design); `img(…,crop)` = image cropped by the design (`object-fit: cover` is close), `,op0.6` = image opacity. `stroke=…/1/inner/dash4,2` = dashed border (`border-style: dashed`). `(outline of a 1.5px stroke)` on an icon path = an outline icon; use the exported SVG.
+- `fx=shadow(x,y,blur,spread,color)` = `box-shadow`; `blur(r)` = Figma blur radius r: CSS `filter: blur(r/2 px)`; `bgblur(r)` = `backdrop-filter: blur(r/2 px)`.
+
 ## Large designs (small context window)
 1. One screen at a time. Big screen: `tree <id> --depth 1`, then `spec <child-id>` per child; implement each child before the next.
 2. Put big results into files: `tokens --out`, `assets export --out`, `spec --out <file>` (you get a one-line summary).
@@ -66,7 +77,7 @@ Lines starting with `# hidden` / `# text value(s) not placed` list things `spec`
 - `screenshot` is an offline approximation (own layout engine, fonts Open Sans/Inter/Ubuntu, icons and missing images are placeholders).
   Compare structure, sizes, texts, not pixels.
 - `.pen`: images may live in a folder next to the file; if missing, `ingest` says so and placeholders are drawn.
-- `.fig`: instances are resolved from their component, resizing and variant overrides only partly; library components not in the file are plain boxes.
+- `.fig`: instances are resolved from their component with Figma's saved layout; resizing without saved data, mixed text styles per character, and variable modes for numbers are not applied; library components not in the file are plain boxes.
 - Unknown fields are tolerated (see "Parser warnings" in `summary`). An unknown `.fig` structure stops with a clear error; report it.
 - Data stays local (index in `<repo>/.design-index/`, Git-ignored, deletable). Let the user review anything that goes to a client.
 

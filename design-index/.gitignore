@@ -1,3 +1,4 @@
 node_modules/
 .design-index/
 *.log
+tests/fixtures/**/*.fig

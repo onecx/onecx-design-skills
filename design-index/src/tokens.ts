@@ -106,3 +106,24 @@ export class TokenIndex {
     return n ? this.nameFor(n) : undefined;
   }
 }
+
+/** Default-mode value of a variable by id or guid, following aliases (used for text bound to a STRING variable). */
+export class VarLookup {
+  private cache = new Map<string, Record<string, unknown> | null>();
+  constructor(private get: (id: string) => string | undefined) {}
+  private vals(id: string): Record<string, unknown> | null {
+    if (!this.cache.has(id)) this.cache.set(id, safeJson<Record<string, unknown>>(this.get(id)) ?? null);
+    return this.cache.get(id) ?? null;
+  }
+  value(id: string, depth = 0): unknown {
+    const v = this.vals(id);
+    if (!v) return undefined;
+    const first = Object.values(v)[0];
+    if (isAlias(first) && depth < 10) return this.value(first.slice(6), depth + 1);
+    return first;
+  }
+  string(id: string): string | undefined {
+    const v = this.value(id);
+    return typeof v === 'string' && !isAlias(v) ? v : undefined;
+  }
+}

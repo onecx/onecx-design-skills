@@ -95,6 +95,6 @@ export function timed<T>(label: string, fn: () => T): T {
   if (!process.env.DESIGN_INDEX_DEBUG) return fn();
   const t = Date.now();
   const r = fn();
-  process.stderr.write(`[time] ${label}: ${Date.now() - t} ms\n`);
+  process.stderr.write(`[time] ${label}: ${Date.now() - t} ms, rss ${Math.round(process.memoryUsage().rss / 1e6)} MB\n`);
   return r;
 }

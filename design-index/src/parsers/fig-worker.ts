@@ -7,12 +7,13 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { ByteBuffer, compileSchema, decodeBinarySchema } from 'kiwi-schema';
 import type { ComponentRow, InteractionRow, NodeRow, NoteRow, VariableRow } from '../model.js';
-import { blobToPath, convertNode, guidStr, variantFromName, type Ctx } from './fig-convert.js';
+import { blobToPath, convertNode, geometryData, guidStr, propDefault, SKIP_TYPES, variantFromName, type Ctx, type GeomRef, type StyleDef, type StyleUse } from './fig-convert.js';
 
 type Any = Record<string, any>;
 export interface FigInit { canvasFile: string; imageMap: Record<string, string>; ack: SharedArrayBuffer }
 
-const TESTED_VERSIONS = new Set([106]);
+// header versions decoded and checked against real files; the header does not identify the schema (it is embedded in the file)
+const TESTED_VERSIONS = new Set([1, 2, 3, 4, 10, 15, 20, 25, 48, 63, 80, 87, 101, 106]);
 const init = workerData as FigInit;
 const port = parentPort!;
 const ack = new Int32Array(init.ack);
@@ -33,11 +34,12 @@ const dec = (c: Buffer, what = 'Chunk'): Buffer => {
 function main(): void {
   let file: Buffer | null = fs.readFileSync(init.canvasFile);
   const magic = file.subarray(0, 8).toString('latin1');
-  if (magic !== 'fig-kiwi' && magic !== 'fig-jam.') throw new Error(`canvas.fig has unknown header "${magic.replace(/[^\x20-\x7e]/g, '?')}" (expected "fig-kiwi")`);
+  if (magic !== 'fig-kiwi' && magic !== 'fig-jam.' && magic !== 'fig-deck') throw new Error(`canvas.fig has unknown header "${magic.replace(/[^\x20-\x7e]/g, '?')}" (expected "fig-kiwi")`);
   const version = file.readUInt32LE(8);
   const warns = new Map<string, number>();
   const warn = (m: string) => warns.set(m, (warns.get(m) ?? 0) + 1);
   if (magic === 'fig-jam.') warn('FigJam file (fig-jam): only partially tested');
+  if (magic === 'fig-deck') warn('Figma Slides file (fig-deck): only partially tested');
   if (!TESTED_VERSIONS.has(version)) warn(`fig-kiwi version ${version} is untested (tested: ${[...TESTED_VERSIONS].join(', ')}); structure is validated`);
   let chunks: Buffer[] = [];
   for (let o = 12; o + 4 <= file.length; ) {
@@ -78,10 +80,13 @@ function main(): void {
   const stackModes = new Map<string, string>();
   const flagged: { id: string; parent: string; grow: boolean; stretch: boolean; abs: boolean }[] = [];
   const propNames = new Map<string, string>();
-  const styleFonts: Record<string, unknown> = {};
+  // shared styles: definitions by guid and key, and the nodes that use them (resolved after the stream)
+  const styleDefs: Record<string, StyleDef> = {};
+  const styleUses: [string, StyleUse][] = [];
+  const textVars: [string, string][] = [];
   const stateGroups = new Map<string, { name: string; defs: Map<string, string> }>();
   const symbols: { id: string; name: string; desc: string; parent: string | null; specs: Any[]; ownDefs: Any[] }[] = [];
-  const geomPending: { id: string; refs: { blob: number; rule?: string }[] }[] = [];
+  const geomPending: { id: string; refs: GeomRef[] }[] = [];
   const neededBlobs = new Set<number>();
   const seenGeom = new Set<string>();
   let nNodes = 0;
@@ -98,7 +103,7 @@ function main(): void {
     if (n.phase === 'REMOVED') return;
     const t: string = n.type;
     const id = guidStr(n.guid)!;
-    if (t === 'DOCUMENT') return;
+    if (t === 'DOCUMENT' || SKIP_TYPES.has(t)) return;
     if (t === 'CANVAS') {
       const name = n.name ?? '';
       canvases.push({ id, name, pos: n.parentIndex?.position ?? '', internal: !!n.internalOnly || /^internal only canvas$/i.test(name) });
@@ -122,7 +127,9 @@ function main(): void {
       for (const d of n.componentPropDefs ?? []) if (d.name) m.set(guidStr(d.id)!, d.name);
       stateGroups.set(id, { name: n.name ?? '', defs: m });
     }
-    if (n.styleType === 'TEXT' && c.row.styles?.font) { styleFonts[n.key ?? id] = c.row.styles.font; styleFonts[id] = c.row.styles.font; }
+    if (c.styleDef) { styleDefs[id] = c.styleDef; if (n.key) styleDefs[n.key] = c.styleDef; }
+    if (c.styleUse) styleUses.push([id, c.styleUse]);
+    if (c.textVar) textVars.push([id, c.textVar]);
     if (c.stackMode) stackModes.set(id, c.stackMode);
     if (c.childFlags && c.parent) flagged.push({ id, parent: c.parent, grow: c.childFlags.grow, stretch: c.childFlags.stretch, abs: !!c.row.layout?.abs });
     if (t === 'SYMBOL') {
@@ -133,11 +140,15 @@ function main(): void {
     }
     if (c.propdefs) pdefsOut.push(...c.propdefs);
     if (c.derived) for (const d of c.derived) {
-      const { g, ...rest } = d;
-      // identical shapes share their blobs: store each geometry once, keyed by its blob indexes
-      const key = g ? `g:${g.map((r) => r.blob).join(',')}` : null;
-      derivedOut.push({ inst: id, ...rest, geom: key });
-      if (g && key && !seenGeom.has(key)) { seenGeom.add(key); geomPending.push({ id: key, refs: g }); for (const r of g) neededBlobs.add(r.blob); }
+      const { g, sg, ...rest } = d;
+      // identical shapes share their blobs: store each geometry once, keyed by its blob indexes (and region styles)
+      const keyOf = (refs: GeomRef[] | undefined, prefix: string): string | null => {
+        if (!refs) return null;
+        const key = `${prefix}:${refs.map((r) => (r.sid ? `${r.blob}.${r.sid}` : r.blob) + (r.rule === 'ODD' ? 'o' : '')).join(',')}`;
+        if (!seenGeom.has(key)) { seenGeom.add(key); geomPending.push({ id: key, refs }); for (const r of refs) neededBlobs.add(r.blob); }
+        return key;
+      };
+      derivedOut.push({ inst: id, ...rest, geom: keyOf(g, 'g'), sg: keyOf(sg, 's') });
     }
     if (c.geomRefs) { geomPending.push({ id, refs: c.geomRefs }); for (const r of c.geomRefs) neededBlobs.add(r.blob); }
     for (const pi of n.prototypeInteractions ?? []) {
@@ -199,10 +210,14 @@ function main(): void {
     } else readScalar(f);
   }
   flush(true);
+  if (process.env.DESIGN_INDEX_DEBUG) {
+    let bytes = 0; for (const b of blobData.values()) bytes += b.length;
+    console.error(JSON.stringify({ heapMB: Math.round(process.memoryUsage().heapUsed / 1e6), blobs: blobData.size, blobMB: Math.round(bytes / 1e6), geomPending: geomPending.length, styleUses: styleUses.length, styleDefs: Object.keys(styleDefs).length, textVars: textVars.length, seenGeom: seenGeom.size, flagged: flagged.length }));
+  }
 
   // ---- geometry (blobs arrive after the nodes) ----
   for (const g of geomPending) {
-    const d = g.refs.map((r) => { const b = blobData.get(r.blob); return b ? blobToPath(b) : ''; }).join('');
+    const d = geometryData(g.refs.map((r) => { const b = blobData.get(r.blob); return { d: b ? blobToPath(b) : '', rule: r.rule, sid: r.sid }; }));
     if (d) geomsOut.push([g.id, d]);
     if (geomsOut.length >= 500) flush(true);
   }
@@ -212,7 +227,7 @@ function main(): void {
   const fixups: [string, string, string][] = [];
   for (const f of flagged) {
     const mode = stackModes.get(f.parent);
-    if (!mode || f.abs) continue;
+    if (!mode || mode === 'GRID' || f.abs) continue;
     const row = mode === 'HORIZONTAL';
     if (f.grow) fixups.push([f.id, row ? 'w' : 'h', 'fill']);
     if (f.stretch) fixups.push([f.id, row ? 'h' : 'w', 'fill']);
@@ -252,8 +267,9 @@ function main(): void {
     } else variant = variantFromName(s.name);
     const props: Record<string, unknown> = {};
     for (const d of s.ownDefs) {
-      const iv = d.initialValue ?? {};
-      const val = iv.boolValue ?? iv.textValue?.characters ?? (typeof iv.textValue === 'string' ? iv.textValue : undefined) ?? undefined;
+      // v106 keeps the default only in varValue (initialValue empty)
+      const v = propDefault(d);
+      const val = typeof v === 'boolean' || typeof v === 'string' || typeof v === 'number' ? v : undefined;
       props[d.name] = `${d.type}${val !== undefined ? '=' + JSON.stringify(val) : ''}`;
     }
     return {
@@ -265,7 +281,7 @@ function main(): void {
   const usage: [string, string, number][] = [...usageMap].map(([k, n]) => { const [a, b] = k.split('\u0000'); return [a, b, n]; });
   canvases.sort((a, b) => Number(a.internal) - Number(b.internal) || (a.pos < b.pos ? -1 : a.pos > b.pos ? 1 : 0));
   send({
-    t: 'done', canvases, variables, components, fixups, usage, warns: [...warns], propNames: Object.fromEntries(propNames), styleFonts,
+    t: 'done', canvases, variables, components, fixups, usage, warns: [...warns], propNames: Object.fromEntries(propNames), styleDefs, styleUses, textVars,
     varmodes: [...sets].flatMap(([sid, st]) => [...st.modes].map(([mid, mname]) => ({ set_id: sid, set_key: [...setByKey].find(([, v]) => v === sid)?.[0] ?? null, set_name: st.name, mode_id: mid, mode_name: mname }))),
     stats: { nodes: nNodes, version, uncompressedMB: Math.round(dataLen / 1e5) / 10, maxHeapMB: Math.round(Math.max(maxHeap, process.memoryUsage().heapUsed) / 1e6) },
   });

@@ -11,12 +11,17 @@
 //   - override paths are sequences of override keys across instance boundaries ([A, Label] != [B, Label]); a segment is never
 //     searched across an instance boundary implicitly
 //   - saved derived data (effective size/position per path) is a cache applied last
-// Simplifications: no slot-content frames (none occur in the test files), no resize constraints, no variable-binding scales.
+//   - slot content (SLOT_CONTENT_ID property): the slot frame shows the assigned content frame's children, without bindings
+//   - text bound to a variable shows the variable's value; an owner's bare binding entry clears it (literal shows)
+// Simplifications: no resize constraints, no variable-binding scales, variables resolve in their default mode.
 import type { DatabaseSync } from './sqlite.js';
-import type { Styles } from './model.js';
+import type { Layout, Styles } from './model.js';
 import { mergeStyles, ovsOf, type Ov } from './overrides.js';
 import { safeJson } from './output.js';
 import type { NodeRec } from './commands/structure.js';
+import { AI, JC } from './parsers/fig-convert.js';
+import { VarLookup } from './tokens.js';
+import { pctLineHeight } from './parsers/fig-styles.js';
 
 const COLS = 'id,parent_id,page,type,name,depth,ord,x,y,w,h,layout,styles,text,component_ref,visible,raw,nchild,stext';
 
@@ -58,7 +63,8 @@ export class Evaluator {
   private kidsC = new Map<string, NodeRec[]>();
   private staticC = new Map<string, Map<string, { top: string; direct: boolean }>>();
   private defsC = new Map<string, Bindings>();
-  private derivedC = new Map<string, { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[]>();
+  private derivedC = new Map<string, DerivedRec[]>();
+  private vars: VarLookup;
   private modeNames = new Map<string, string>();
   private setNames = new Map<string, string>();
   private count = 0;
@@ -73,7 +79,9 @@ export class Evaluator {
     this.qKids = db.prepare(`SELECT ${COLS} FROM nodes WHERE parent_id=? ORDER BY ord`);
     this.qDefs = db.prepare('SELECT id, initial, parent FROM propdefs WHERE owner=?');
     this.qDef = db.prepare('SELECT initial, parent FROM propdefs WHERE id=? LIMIT 1');
-    this.qDerived = db.prepare('SELECT p,w,h,x,y,geom,ns FROM derived WHERE inst=?');
+    this.qDerived = db.prepare('SELECT p,w,h,x,y,geom,ns,sg FROM derived WHERE inst=?');
+    const qVar = db.prepare('SELECT vals FROM variables WHERE id=? OR guid=? LIMIT 1');
+    this.vars = new VarLookup((id) => (qVar.get(id, id) as { vals: string } | undefined)?.vals);
     for (const m of db.prepare('SELECT set_id,set_key,set_name,mode_id,mode_name FROM varmodes').all() as { set_id: string; set_key: string | null; set_name: string; mode_id: string; mode_name: string }[]) {
       this.modeNames.set(m.mode_id, m.mode_name);
       this.setNames.set(m.set_id, m.set_name);
@@ -228,9 +236,16 @@ export class Evaluator {
       scope = this.scopeOf(src, root.map((l) => ({ pa: l.pa!, rank: l.rank })));
       rest = layers.filter((l) => l.path.length > 0);
     }
-    const children = this.kids(src.id);
+    // a slot frame shows the content frame its SLOT_CONTENT_ID property names (expanded without the component's bindings)
+    const slotDef = raw?.refs?.C as string | undefined;
+    const slotB = slotDef ? bindings.get(slotDef) : undefined;
+    const slotId = (slotB?.v as { slot?: string } | null | undefined)?.slot;
+    if (slotB && slotId) slotB.used = true;
+    const holder = slotId && this.node(slotId) ? slotId : src.id;
+    if (holder !== src.id) scope = new Map();
+    const children = this.kids(holder);
     if (depth >= this.opts.maxDepth) { if (children.length) node.truncated = children.length; return node; }
-    const routed = this.route(src.id, rest);
+    const routed = this.route(holder, rest);
     node.kids = children.map((c) => this.expand(c, scope, routed.get(c.id) ?? [], rank + 1, depth + 1));
     (node as VNode & { scope?: Bindings }).scope = src.type === 'component' ? scope : undefined;
     return node;
@@ -248,7 +263,7 @@ export class Evaluator {
       if (!o.p) continue;
       const path = o.p.split('/');
       if (o.swap || o.pa) structural.push({ path, swap: o.swap, pa: o.pa, rank });
-      if (o.t !== undefined || o.hidden || o.show || o.st || o.sz || o.vm) claims.push({ path, ov: o });
+      if (o.t !== undefined || o.hidden || o.show || o.st || o.sz || o.vm || o.sp || o.rc || o.lo || o.vb) claims.push({ path, ov: o });
     }
     // an override without path swaps/configures the instance itself (pen refs never have one)
     const self = ovsOf(raw).find((o) => !o.p && o.swap);
@@ -308,8 +323,8 @@ export class Evaluator {
     }
     // property claims of this owner, then the saved layout cache; outer owners run after inner ones by construction
     for (const c of claims) {
-      const target = this.resolve(node, c.path);
-      if (target) this.applyClaim(target, c.ov, rank);
+      const hit = this.resolveWithParent(node, c.path);
+      if (hit) this.applyClaim(hit.node, c.ov, rank, hit.parent);
     }
     for (const d of this.derivedOf(src.id)) {
       const target = this.resolve(node, d.p);
@@ -320,16 +335,20 @@ export class Evaluator {
       if (d.x != null) r.x = d.x;
       if (d.y != null) r.y = d.y;
       target.row = r;
+      const fromStroke = this.raw(target.row)?.geometryFrom === 'stroke';
+      // saved outlines of this occurrence, already at its size; a stroke-only vector draws its saved stroke outline
       if (d.geom) target.geomKey = d.geom;
-      if (d.ns && r.styles?.includes('"stroke"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.stroke; target.row = { ...r, styles: JSON.stringify(st) }; }
+      else if (fromStroke && d.sg) target.geomKey = d.sg;
+      if (d.ns && fromStroke && r.styles?.includes('"fill"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.fill; target.row = { ...r, styles: JSON.stringify(st) }; }
+      else if (d.ns && r.styles?.includes('"stroke"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.stroke; target.row = { ...r, styles: JSON.stringify(st) }; }
     }
     return node;
   }
 
-  private derivedOf(inst: string): { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[] {
+  private derivedOf(inst: string): DerivedRec[] {
     let d = this.derivedC.get(inst);
     if (!d) {
-      d = (this.qDerived.all(inst) as { p: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null }[]).map((r) => ({ ...r, ps: r.p, p: r.p.split('/') }));
+      d = (this.qDerived.all(inst) as (Omit<DerivedRec, 'p' | 'ps'> & { p: string })[]).map((r) => ({ ...r, ps: r.p, p: r.p.split('/') }));
       this.derivedC.set(inst, d);
     }
     return d;
@@ -337,36 +356,147 @@ export class Evaluator {
 
   /** Find the node a path addresses: instance boundaries are explicit segments, containers are searched through. */
   private resolve(root: VNode, path: string[]): VNode | undefined {
+    return this.resolveWithParent(root, path)?.node;
+  }
+  private resolveWithParent(root: VNode, path: string[]): { node: VNode; parent?: VNode } | undefined {
     let cur = root;
+    let parent: VNode | undefined;
     for (const [i, seg] of path.entries()) {
       if (i === 0) {
         const comp = cur.row.component_ref ? this.node(cur.row.component_ref) : undefined;
         const ok = comp && this.raw(comp)?.ok;
         if (seg === cur.row.component_ref || seg === ok) continue; // addresses the root itself
       }
-      const found = this.findWithinBoundary(cur.kids, seg);
+      const found = this.findWithinBoundary(cur, seg);
       if (!found) return undefined;
-      cur = found;
+      cur = found.node;
+      parent = found.parent;
     }
-    return cur;
+    return { node: cur, parent };
   }
-  private findWithinBoundary(kids: VNode[], seg: string): VNode | undefined {
-    for (const k of kids) {
-      if (keyOf(k.row, this.raw(k.row)).includes(seg)) return k;
-      if (!k.isInstance) { const f = this.findWithinBoundary(k.kids, seg); if (f) return f; }
+  private findWithinBoundary(v: VNode, seg: string): { node: VNode; parent: VNode } | undefined {
+    for (const k of v.kids) {
+      if (keyOf(k.row, this.raw(k.row)).includes(seg)) return { node: k, parent: v };
+      if (!k.isInstance) { const f = this.findWithinBoundary(k, seg); if (f) return f; }
     }
     return undefined;
   }
 
-  private applyClaim(t: VNode, o: Ov, ownerRank: number): void {
+  /** Applies one owner's override record to the addressed layer (absent fields inherit). */
+  private applyClaim(t: VNode, o: Ov, ownerRank: number, parent?: VNode): void {
     const ranked = (field: string): boolean => { const r = t.assigned.get(field); return r === undefined || r >= ownerRank; };
     const row = { ...t.row };
+    const raw = this.raw(t.row);
     if (o.t !== undefined && ranked('text')) row.text = o.t;
     if (o.hidden) { row.visible = 0; t.hidden = true; }
     if (o.show && ranked('visible')) { row.visible = 1; t.hidden = false; }
-    if (o.st) row.styles = JSON.stringify(mergeStyles(safeJson<Styles>(row.styles) ?? {}, o.st));
+    if (o.st || o.sp || o.rc || o.vb) {
+      let ov: Styles = o.st ?? {};
+      // a stroke-only vector draws its stroke outline as a fill: a stroke colour override recolours that fill
+      if (raw?.geometryFrom === 'stroke' && ov.stroke) {
+        const { stroke, ...rest } = ov;
+        // an empty stroke list hides the outline (fill [] clears)
+        ov = { ...rest, fill: stroke.paints };
+      }
+      const st = mergeStyles(safeJson<Styles>(row.styles) ?? {}, ov);
+      if (o.sp && st.stroke && raw?.geometryFrom !== 'stroke') st.stroke = strokeWith(st.stroke, o.sp);
+      if (o.rc && !['path', 'boolean', 'polygon'].includes(row.type)) {
+        const r = radiusWith(st.r, o.rc);
+        if (r === undefined) delete st.r; else st.r = r;
+      }
+      if (o.vb) {
+        const vars: Record<string, string> = { ...st.vars };
+        for (const [k, v] of Object.entries(o.vb)) { if (v) vars[k] = v; else delete vars[k]; }
+        if (Object.keys(vars).length) st.vars = vars; else delete st.vars;
+      }
+      if (st.vars && !Object.keys(st.vars).length) delete st.vars;
+      if (st.font) {
+        // values an override stored without the font size (px line height, % tracking) are resolved against the target's size
+        const s = typeof st.font.s === 'number' ? st.font.s : undefined;
+        if (s && typeof st.font.lh === 'string' && st.font.lh.endsWith('px')) st.font.lh = Math.round((parseFloat(st.font.lh) / s) * 1000) / 1000;
+        if (s && typeof st.font.ls === 'string' && st.font.ls.endsWith('%')) st.font.ls = Math.round(parseFloat(st.font.ls) * s) / 100;
+        if (typeof st.font.lh === 'string' && st.font.lh.endsWith('%')) st.font.lh = pctLineHeight(st.font.lh, st.font.nlh);
+      }
+      row.styles = Object.keys(st).length ? JSON.stringify(st) : null;
+    }
+    if (o.lo) { const l = layoutWith(safeJson<Layout>(row.layout), o.lo, parent ? safeJson<Layout>(parent.row.layout)?.dir : undefined); row.layout = l ? JSON.stringify(l) : null; }
     if (o.sz) { row.w = o.sz.w; row.h = o.sz.h; }
     if (o.vm?.length) t.modes = [...(t.modes ?? []), ...o.vm.map((e) => `${this.setNames.get(e.s) ?? e.s}=${this.modeNames.get(e.m) ?? e.m}`)];
+    // a text binding decides the content: a literal of a bound layer is retired (Figma shows the variable's value)
+    if (row.type === 'text') {
+      const v = safeJson<Styles>(row.styles)?.vars?.text;
+      const s = v ? this.vars.string(v) : undefined;
+      if (s !== undefined) row.text = s;
+    }
     t.row = row;
   }
+}
+
+interface DerivedRec { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null; sg: string | null }
+
+/** Stroke width/alignment/dash override; per-side widths only with the independent flag (missing side = 0). */
+function strokeWith(s: NonNullable<Styles['stroke']>, sp: NonNullable<Ov['sp']>): NonNullable<Styles['stroke']> {
+  const out = { ...s };
+  const curSides = Array.isArray(s.w) ? s.w : undefined;
+  const uniform = typeof sp.w === 'number' ? sp.w : typeof s.w === 'number' ? s.w : undefined;
+  const ind = sp.bw?.ind ?? !!curSides;
+  if (ind && (sp.bw || curSides)) {
+    const base = curSides ?? [uniform ?? 0, uniform ?? 0, uniform ?? 0, uniform ?? 0];
+    out.w = [sp.bw?.t ?? base[0], sp.bw?.r ?? base[1], sp.bw?.b ?? base[2], sp.bw?.l ?? base[3]];
+  } else out.w = uniform;
+  if (sp.align) out.align = sp.align;
+  if (sp.dash !== undefined) { if (sp.dash) out.dash = sp.dash; else delete out.dash; }
+  return out;
+}
+
+/** Corner override (Figma rule: independent flag -> per-corner fields with absent = 0, otherwise cornerRadius). */
+function radiusWith(cur: Styles['r'], rc: NonNullable<Ov['rc']>): number | number[] | undefined {
+  const arr = Array.isArray(cur) ? cur : undefined;
+  const uni = typeof cur === 'number' ? cur : 0;
+  const ind = rc.ind ?? !!arr;
+  let r: number | number[];
+  if (ind) {
+    const base = arr ?? [rc.cr ?? uni, rc.cr ?? uni, rc.cr ?? uni, rc.cr ?? uni];
+    r = [rc.tl ?? base[0], rc.tr ?? base[1], rc.br ?? base[2], rc.bl ?? base[3]];
+    if (new Set(r).size === 1) r = r[0];
+  } else r = rc.cr ?? (arr ? Math.max(...arr) : uni);
+  return (Array.isArray(r) ? r.some((x) => x > 0) : r > 0) ? r : undefined;
+}
+
+/** Auto-layout / text-resize override fields (Figma NodeChange names) applied to a layout rule; `parentDir` decides fill axes. */
+export function layoutWith(cur: Layout | null, lo: Record<string, unknown>, parentDir?: string): Layout | null {
+  const l: Layout = { ...cur };
+  const mode = lo.stackMode as string | undefined;
+  if (mode === 'NONE') { for (const k of ['dir', 'gap', 'pad', 'jc', 'ai', 'wrap'] as const) delete l[k]; }
+  else if (mode === 'HORIZONTAL') l.dir = 'row';
+  else if (mode === 'VERTICAL') l.dir = 'col';
+  else if (mode === 'GRID') l.dir = 'grid';
+  const set = (axis: 'w' | 'h', hug: boolean) => { if (hug) { if (l[axis] !== 'fill') l[axis] = 'hug'; } else if (l[axis] === 'hug') delete l[axis]; };
+  const row = l.dir === 'row';
+  if (l.dir === 'row' || l.dir === 'col') {
+    if (lo.stackPrimarySizing !== undefined) set(row ? 'w' : 'h', String(lo.stackPrimarySizing).startsWith('RESIZE_TO_FIT'));
+    if (lo.stackCounterSizing !== undefined) set(row ? 'h' : 'w', String(lo.stackCounterSizing).startsWith('RESIZE_TO_FIT'));
+  }
+  if (lo.stackPositioning !== undefined) { if (lo.stackPositioning === 'ABSOLUTE') l.abs = true; else delete l.abs; }
+  if (parentDir === 'row' || parentDir === 'col') {
+    const main = parentDir === 'row' ? 'w' : 'h', cross = parentDir === 'row' ? 'h' : 'w';
+    if (typeof lo.stackChildPrimaryGrow === 'number') { if (lo.stackChildPrimaryGrow > 0) l[main] = 'fill'; else if (l[main] === 'fill') delete l[main]; }
+    if (lo.stackChildAlignSelf !== undefined) { if (lo.stackChildAlignSelf === 'STRETCH') l[cross] = 'fill'; else if (l[cross] === 'fill') delete l[cross]; }
+  }
+  if (typeof lo.stackSpacing === 'number') { if (lo.stackSpacing) l.gap = Math.round(lo.stackSpacing * 100) / 100; else delete l.gap; }
+  const pads: [string, number][] = [['stackVerticalPadding', 0], ['stackPaddingRight', 1], ['stackPaddingBottom', 2], ['stackHorizontalPadding', 3]];
+  if (pads.some(([f]) => typeof lo[f] === 'number')) {
+    const p = [...(l.pad ?? [0, 0, 0, 0])];
+    for (const [f, i] of pads) if (typeof lo[f] === 'number') p[i] = Math.round((lo[f] as number) * 100) / 100;
+    if (p.some((x) => x)) l.pad = p; else delete l.pad;
+  }
+  if (lo.stackPrimaryAlignItems !== undefined) { const jc = JC[String(lo.stackPrimaryAlignItems)]; if (jc) l.jc = jc; else delete l.jc; }
+  if (l.jc === 'between' || l.jc === 'around' || l.jc === 'evenly') delete l.gap;
+  if (lo.stackCounterAlignItems !== undefined) { const ai = AI[String(lo.stackCounterAlignItems)]; if (ai) l.ai = ai; else delete l.ai; }
+  if (lo.stackWrap !== undefined) { if (lo.stackWrap === 'WRAP') l.wrap = true; else delete l.wrap; }
+  const tar = lo.textAutoResize;
+  if (tar === 'WIDTH_AND_HEIGHT') { set('w', true); set('h', true); }
+  else if (tar === 'HEIGHT') { set('w', false); set('h', true); }
+  else if (tar === 'NONE') { set('w', false); set('h', false); }
+  return Object.keys(l).length ? l : null;
 }
