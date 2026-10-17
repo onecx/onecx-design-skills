@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { ByteBuffer, compileSchema, decodeBinarySchema } from 'kiwi-schema';
 import type { ComponentRow, InteractionRow, NodeRow, NoteRow, VariableRow } from '../model.js';
-import { blobToPath, convertNode, geometryData, guidStr, propDefault, SKIP_TYPES, variantFromName, type Ctx, type GeomRef, type StyleDef, type StyleUse } from './fig-convert.js';
+import { blobToPath, colorHex, convertNode, geometryData, guidStr, propDefault, SKIP_TYPES, variantFromName, type Ctx, type GeomRef, type StyleDef, type StyleUse } from './fig-convert.js';
 
 type Any = Record<string, any>;
 export interface FigInit { canvasFile: string; imageMap: Record<string, string>; ack: SharedArrayBuffer }
@@ -91,6 +91,7 @@ function main(): void {
   const seenGeom = new Set<string>();
   let nNodes = 0;
   let maxHeap = 0;
+  let colorProfile: string | undefined;
 
   const flush = (force = false) => {
     if (!force && nodes.length < 1000 && derivedOut.length < 5000) return;
@@ -103,7 +104,12 @@ function main(): void {
     if (n.phase === 'REMOVED') return;
     const t: string = n.type;
     const id = guidStr(n.guid)!;
-    if (t === 'DOCUMENT' || SKIP_TYPES.has(t)) return;
+    if (t === 'DOCUMENT') {
+      // colours of a Display-P3 document are P3 values: converted to sRGB from here on (the document record comes first)
+      if (n.documentColorProfile) { colorProfile = String(n.documentColorProfile); ctx.p3 = colorProfile === 'DISPLAY_P3'; if (ctx.p3 && nNodes) warn('Display-P3 document record after other nodes: earlier colours were not converted'); }
+      return;
+    }
+    if (SKIP_TYPES.has(t)) return;
     if (t === 'CANVAS') {
       const name = n.name ?? '';
       canvases.push({ id, name, pos: n.parentIndex?.position ?? '', internal: !!n.internalOnly || /^internal only canvas$/i.test(name) });
@@ -189,6 +195,16 @@ function main(): void {
     }
   };
   let blobBase = 0;
+  const readBlobs = (base: number): void => {
+    const len = bb.readVarUint();
+    for (let i = 0; i < len; i++) {
+      const b = schema.decodeBlob(bb);
+      if (neededBlobs.has(i + base)) blobData.set(i + base, new Uint8Array(b.bytes));
+    }
+  };
+  // Kiwi does not fix the field order: blobs that come before the nodes are read again once the nodes have said which ones they need
+  const earlyBlobs: { at: number; base: number }[] = [];
+  let nodesDone = false;
   for (;;) {
     const fid = bb.readVarUint();
     if (fid === 0) break;
@@ -197,18 +213,17 @@ function main(): void {
     if (f.name === 'nodeChanges' && f.isArray) {
       const len = bb.readVarUint();
       for (let i = 0; i < len; i++) handle(schema.decodeNodeChange(bb));
+      nodesDone = true;
     } else if (f.name === 'blobs' && f.isArray) {
-      const len = bb.readVarUint();
-      for (let i = 0; i < len; i++) {
-        const b = schema.decodeBlob(bb);
-        if (neededBlobs.has(i + blobBase)) blobData.set(i + blobBase, new Uint8Array(b.bytes));
-      }
+      if (!nodesDone) earlyBlobs.push({ at: bb._index, base: blobBase });
+      readBlobs(blobBase);
     } else if (f.name === 'blobBaseIndex') blobBase = Number(readScalar(f));
     else if (f.isArray) {
       if (f.type === 'byte') bb.readByteArray();
       else { const len = bb.readVarUint(); for (let i = 0; i < len; i++) readScalar(f); }
     } else readScalar(f);
   }
+  for (const e of earlyBlobs) { bb._index = e.at; readBlobs(e.base); }
   flush(true);
   if (process.env.DESIGN_INDEX_DEBUG) {
     let bytes = 0; for (const b of blobData.values()) bytes += b.length;
@@ -245,10 +260,7 @@ function main(): void {
       const val = e.variableData?.value ?? {};
       let out: unknown;
       if (val.alias) out = 'alias:' + (val.alias.assetRef?.key ?? idOfGuid.get(guidStr(val.alias.guid)!) ?? guidStr(val.alias.guid));
-      else if (val.colorValue) {
-        const c = val.colorValue; const h = (x: number) => Math.round(x * 255).toString(16).padStart(2, '0');
-        out = `#${h(c.r)}${h(c.g)}${h(c.b)}${c.a < 0.995 ? h(c.a) : ''}`;
-      } else if (val.floatValue !== undefined) out = Math.round(val.floatValue * 1000) / 1000;
+      else if (val.colorValue) out = colorHex(val.colorValue, 1, ctx.p3); else if (val.floatValue !== undefined) out = Math.round(val.floatValue * 1000) / 1000;
       else if (val.boolValue !== undefined) out = val.boolValue;
       else if (val.textValue !== undefined) out = typeof val.textValue === 'string' ? val.textValue : val.textValue?.characters ?? '';
       else out = null;
@@ -283,6 +295,7 @@ function main(): void {
   send({
     t: 'done', canvases, variables, components, fixups, usage, warns: [...warns], propNames: Object.fromEntries(propNames), styleDefs, styleUses, textVars,
     varmodes: [...sets].flatMap(([sid, st]) => [...st.modes].map(([mid, mname]) => ({ set_id: sid, set_key: [...setByKey].find(([, v]) => v === sid)?.[0] ?? null, set_name: st.name, mode_id: mid, mode_name: mname }))),
+    colorProfile,
     stats: { nodes: nNodes, version, uncompressedMB: Math.round(dataLen / 1e5) / 10, maxHeapMB: Math.round(Math.max(maxHeap, process.memoryUsage().heapUsed) / 1e6) },
   });
 }

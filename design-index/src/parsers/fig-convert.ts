@@ -1,7 +1,7 @@
 // Pure mapping from decoded Kiwi NodeChange objects to the intermediate model. No I/O, no state beyond what is passed in.
 // Field semantics follow what Figma itself saved in real files (child transforms, derivedTextData, fillGeometry); see the
 // research notes referenced in README (0.1.3 changelog).
-import type { Layout, NodeRow, NodeType, Paint, Styles } from '../model.js';
+import type { Layout, NodeRow, NodeType, Paint, Styles, TextRun } from '../model.js';
 
 type Any = Record<string, any>;
 
@@ -10,9 +10,31 @@ export const guidStr = (g?: { sessionID: number; localID: number } | null): stri
 export const UNSET_ID = 4294967295;
 
 const hex2 = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, '0');
-export function colorHex(c: { r: number; g: number; b: number; a?: number }, opacity = 1): string {
+const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+const enc = (v: number) => { const x = Math.max(0, Math.min(1, v)); return x <= 0.0031308 ? x * 12.92 : 1.055 * x ** (1 / 2.4) - 0.055; };
+/**
+ * Display-P3 colour (Figma `documentColorProfile: DISPLAY_P3`) to sRGB: both use the sRGB transfer curve; linear P3 -> linear sRGB
+ * (CSS Color 4 matrices), out-of-gamut values are clamped.
+ */
+export function p3ToSrgb(c: { r: number; g: number; b: number; a?: number }): { r: number; g: number; b: number; a?: number } {
+  const r = lin(c.r), g = lin(c.g), b = lin(c.b);
+  return {
+    r: enc(1.2249401762805598 * r - 0.22494017628055996 * g),
+    g: enc(-0.04205695470968816 * r + 1.0420569547096881 * g),
+    b: enc(-0.019637554590334432 * r - 0.07863604555063188 * g + 1.0982736001409663 * b),
+    a: c.a,
+  };
+}
+/** `p3` = the document stores Display-P3 values: convert them to sRGB first */
+export function colorHex(c: { r: number; g: number; b: number; a?: number }, opacity = 1, p3 = false): string {
+  if (p3) c = p3ToSrgb(c);
   const a = (c.a ?? 1) * opacity;
   return `#${hex2(c.r)}${hex2(c.g)}${hex2(c.b)}${a < 0.995 ? hex2(a) : ''}`;
+}
+/** Figma blend mode -> CSS spelling; normal and pass-through (the defaults) -> undefined. Figma's LINEAR_BURN/LINEAR_DODGE keep their names. */
+export function blendOf(m: unknown): string | undefined {
+  if (typeof m !== 'string' || m === 'NORMAL' || m === 'PASS_THROUGH' || m === 'UNSET') return undefined;
+  return m.toLowerCase().replace(/_/g, '-');
 }
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -47,6 +69,8 @@ export interface Ctx {
   imageMap: Record<string, string>;
   usage: (kind: string, value: string) => void;
   warn: (msg: string) => void;
+  /** the document's colours are Display-P3 (DOCUMENT.documentColorProfile) */
+  p3?: boolean;
 }
 
 const bytesHex = (b: unknown): string => (b instanceof Uint8Array ? Buffer.from(b).toString('hex') : '');
@@ -84,13 +108,16 @@ export function convertPaints(list: Any[] | undefined, ctx: Ctx, track: boolean)
   for (const p of list ?? []) {
     if (!p || p.visible === false) continue;
     const t: string = p.type;
+    const bm = blendOf(p.blendMode);
     if (t === 'SOLID') {
-      const c = colorHex(p.color ?? { r: 0, g: 0, b: 0 }, p.opacity ?? 1);
+      const c = colorHex(p.color ?? { r: 0, g: 0, b: 0 }, p.opacity ?? 1, ctx.p3);
       const v = varRef(p);
       if (!v && track) ctx.usage('color', c);
-      out.push(v ? { k: 'solid', c, v } : { k: 'solid', c });
+      const sp: Paint = v ? { k: 'solid', c, v } : { k: 'solid', c };
+      if (bm) sp.bm = bm;
+      out.push(sp);
     } else if (t.startsWith('GRADIENT')) {
-      const stops: [string, number][] = (p.stops ?? []).map((s: Any) => [colorHex(s.color, p.opacity ?? 1), Math.round((s.position ?? 0) * 1000) / 1000]);
+      const stops: [string, number][] = (p.stops ?? []).map((s: Any) => [colorHex(s.color, p.opacity ?? 1, ctx.p3), Math.round((s.position ?? 0) * 1000) / 1000]);
       const m = p.transform;
       let a: number | undefined;
       let hp: number[] | undefined;
@@ -106,7 +133,9 @@ export function convertPaints(list: Any[] | undefined, ctx: Ctx, track: boolean)
             : [...apply(inv, 0.5, 0.5), ...apply(inv, 1, 0.5), ...apply(inv, 0.5, 1)].map(r4);
         }
       }
-      out.push({ k: 'grad', t: kind, stops, a, p: hp });
+      const gp: Paint = { k: 'grad', t: kind, stops, a, p: hp };
+      if (bm) gp.bm = bm;
+      out.push(gp);
     } else if (t === 'IMAGE') {
       const h = bytesHex(p.image?.hash);
       const asset = h ? ctx.imageMap[h] : undefined;
@@ -117,6 +146,7 @@ export function convertPaints(list: Any[] | undefined, ctx: Ctx, track: boolean)
       const m = p.transform;
       if (mode === 'crop' && m && typeof m.m00 === 'number') img.tf = [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12].map((x: number) => r4(x));
       if (typeof p.opacity === 'number' && p.opacity < 1) img.o = r3(p.opacity);
+      if (bm) img.bm = bm;
       out.push(img);
     } else if (t === 'EMOJI' || t === 'VIDEO') ctx.warn(`paint type ${t} not supported`);
     else ctx.warn(`unknown paint type ${t}`);
@@ -129,7 +159,7 @@ export function convertEffects(list: Any[] | undefined, ctx: Ctx): NonNullable<S
   for (const e of list ?? []) {
     if (!e || e.visible === false) continue;
     const t = e.type as string;
-    if (t === 'DROP_SHADOW' || t === 'INNER_SHADOW') out.push({ k: 'shadow', x: e.offset?.x, y: e.offset?.y, blur: e.radius, spread: e.spread || undefined, c: e.color ? colorHex(e.color) : undefined, inner: t === 'INNER_SHADOW' || undefined });
+    if (t === 'DROP_SHADOW' || t === 'INNER_SHADOW') out.push({ k: 'shadow', x: e.offset?.x, y: e.offset?.y, blur: e.radius, spread: e.spread || undefined, c: e.color ? colorHex(e.color, 1, ctx.p3) : undefined, inner: t === 'INNER_SHADOW' || undefined });
     else if (t === 'BACKGROUND_BLUR') out.push({ k: 'bgblur', blur: e.radius });
     else if (t === 'FOREGROUND_BLUR') out.push({ k: 'blur', blur: e.radius });
     else ctx.warn(`effect type ${t} not supported (ignored)`);
@@ -232,10 +262,80 @@ export function fontOf(n: Any, keepNull = false): NonNullable<Styles['font']> {
   if (cs !== undefined) f.case = cs;
   if (n.textTruncation !== undefined) f.trunc = n.textTruncation === 'ENDING' ? (typeof n.maxLines === 'number' && n.maxLines > 0 ? n.maxLines : true) : null;
   if (typeof nat === 'number' && nat > 0) f.nlh = r4(nat);
+  if (n.leadingTrim !== undefined) f.trim = n.leadingTrim === 'CAP_HEIGHT' ? 'cap' : null;
   for (const k of Object.keys(f)) {
     if (f[k] === undefined || (f[k] === null && !keepNull)) delete f[k];
   }
   return f as NonNullable<Styles['font']>;
+}
+
+/** A hyperlink record: its URL, or `#<node-id>` for a link to a node; `{}` and the unset guid mean no link. */
+export function linkOf(h: Any | undefined): string | undefined {
+  if (!h) return undefined;
+  if (typeof h.url === 'string' && h.url) return h.url;
+  if (h.guid && h.guid.sessionID !== UNSET_ID) return '#' + guidStr(h.guid);
+  return undefined;
+}
+
+const RUN_FONT_FIELDS = ['fontName', 'fontSize', 'lineHeight', 'letterSpacing', 'textDecoration', 'textCase', 'leadingTrim'];
+
+/** The style of one styleOverrideTable entry: only the fields it sets (null = explicitly the default). */
+function runStyle(e: Any, base: Any, ctx: Ctx): Omit<TextRun, 'i' | 'n'> | null {
+  const r: Omit<TextRun, 'i' | 'n'> = {};
+  if (RUN_FONT_FIELDS.some((k) => e[k] !== undefined) || e.semanticWeight === 'BOLD' || e.semanticItalic === 'ITALIC') {
+    const fs = typeof e.fontSize === 'number' ? e.fontSize : base.fontSize;
+    const f: Record<string, unknown> = fontOf({
+      fontName: e.fontName, fontSize: fs, lineHeight: e.lineHeight, letterSpacing: e.letterSpacing, textDecoration: e.textDecoration,
+      textCase: e.textCase, leadingTrim: e.leadingTrim, derivedTextData: base.derivedTextData,
+    }, true);
+    if (e.fontSize === undefined) delete f.s;
+    delete f.nlh;
+    if (!e.fontName && e.semanticWeight === 'BOLD') f.w = 700;
+    if (!e.fontName && e.semanticItalic === 'ITALIC') f.st = 'italic';
+    if (Object.keys(f).length) r.font = f as TextRun['font'];
+  }
+  if (Array.isArray(e.fillPaints)) r.fill = convertPaints(e.fillPaints, { ...ctx, usage: () => undefined }, false);
+  const link = linkOf(e.hyperlink);
+  if (link) r.link = link;
+  const t = styleRef(e.styleIdForText), f = styleRef(e.styleIdForFill);
+  if (t && t !== 'UNSET') r.tsid = t;
+  if (f && f !== 'UNSET') r.fsid = f;
+  if (e.isOverrideOverTextStyle === true && r.tsid) r.ovr = true;
+  return Object.keys(r).length ? r : null;
+}
+
+/**
+ * Character ranges with their own style. `characterStyleIDs` holds one styleID per UTF-16 code unit of the characters (missing
+ * trailing entries = 0); a non-zero id selects the `styleOverrideTable` entry with that `styleID`, 0 = the text's own style.
+ * `base` (the text node or override record) supplies the font size and the saved font metrics. Equal neighbours are merged.
+ */
+export function textRuns(td: Any | undefined, base: Any, ctx: Ctx): TextRun[] {
+  const chars: string = typeof td?.characters === 'string' ? td.characters : '';
+  const ids = (td?.characterStyleIDs ?? []) as number[];
+  const table = (td?.styleOverrideTable ?? []) as Any[];
+  if (!chars || !ids.length || !table.length) return [];
+  const entries = new Map<number, Any>();
+  for (const e of table) if (typeof e?.styleID === 'number' && e.styleID !== 0) entries.set(e.styleID, e);
+  const conv = new Map<number, Omit<TextRun, 'i' | 'n'> | null>();
+  const out: TextRun[] = [];
+  const end = Math.min(chars.length, ids.length);
+  for (let i = 0; i < end; ) {
+    const id = ids[i] ?? 0;
+    let j = i + 1;
+    while (j < end && (ids[j] ?? 0) === id) j++;
+    if (id && entries.has(id)) {
+      if (!conv.has(id)) conv.set(id, runStyle(entries.get(id)!, base, ctx));
+      const st = conv.get(id);
+      if (st) {
+        const prev = out[out.length - 1];
+        if (prev && prev.i + prev.n === i && JSON.stringify({ ...prev, i: 0, n: 0 }) === JSON.stringify({ i: 0, n: 0, ...st })) prev.n += j - i;
+        else out.push({ i, n: j - i, ...st });
+      }
+    }
+    i = j;
+  }
+  if (out.length > 400) { ctx.warn('text with more than 400 style ranges: the rest is ignored'); out.length = 400; }
+  return out;
 }
 
 /** Stroke width/alignment/dash of a node (independent of whether it has stroke paints). */
@@ -283,7 +383,8 @@ export function transformOf(tr: Any): { rot?: number; flip?: 'x' | 'y'; m?: numb
 
 export interface PropDef { owner: string; id: string; name: string; type: string; initial: unknown; parent: string | null }
 export interface GeomRef { blob: number; rule?: string; sid?: number }
-export interface StyleUse { t?: string; f?: string; s?: string; e?: string }
+/** `r` = text ranges with their own style references */
+export interface StyleUse { t?: string; f?: string; s?: string; e?: string; r?: boolean }
 export interface StyleDef { name: string; type: string; font?: NonNullable<Styles['font']>; fill?: Paint[]; fx?: NonNullable<Styles['fx']> }
 export interface DerivedOut { p: string; w?: number; h?: number; x?: number; y?: number; ns?: boolean; g?: GeomRef[]; sg?: GeomRef[] }
 
@@ -335,6 +436,8 @@ export function convertOverride(o: Any, ctx: Ctx): Any | null {
   const nu: Ctx = { ...ctx, usage: () => undefined };
   const e: Any = { p: path };
   if (o.textData?.characters !== undefined) e.t = String(o.textData.characters).slice(0, 2000);
+  // new characters come with their own ranges (none = the text's own style throughout)
+  const runs = o.textData?.characters !== undefined ? textRuns(o.textData, o, nu) : undefined;
   if (o.visible === false) e.hidden = true;
   if (o.visible === true) e.show = true;
   const ovm = o.variableModeBySetMap?.entries as Any[] | undefined;
@@ -367,6 +470,13 @@ export function convertOverride(o: Any, ctx: Ctx): Any | null {
   const font = fontOf(o, true);
   delete font.nlh;
   if (Object.keys(font).length) st.font = font;
+  if (runs?.length) st.runs = runs;
+  const link = linkOf(o.hyperlink);
+  if (link) st.link = link;
+  else if (o.hyperlink !== undefined) st.link = null; // `{}` / unset guid: the override removes the component's link
+  const blend = blendOf(o.blendMode);
+  if (blend) st.blend = blend;
+  else if (o.blendMode === 'NORMAL' || o.blendMode === 'PASS_THROUGH') st.blend = null;
   if (Object.keys(st).length) e.st = st;
   // shared styles (resolved after the stream: the style record may come later)
   const sid = styleRef(o.styleIdForText), fsid = styleRef(o.styleIdForFill), ssid = styleRef(o.styleIdForStrokeFill), esid = styleRef(o.styleIdForEffect);
@@ -430,6 +540,8 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
     for (const v of new Set(pad)) if (v) ctx.usage('pad', String(Math.round(v)));
   }
   if (n.stackPositioning === 'ABSOLUTE') layout.abs = true;
+  // paint order only (layout order unchanged): the first child is drawn on top
+  if (n.stackReverseZIndex === true && n.stackMode && n.stackMode !== 'NONE') raw.revZ = true;
 
   // shared styles referenced by this node
   const use: StyleUse = {};
@@ -481,6 +593,8 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
     }
   }
   if (typeof n.opacity === 'number' && n.opacity < 1) styles.op = r3(n.opacity);
+  const blend = blendOf(n.blendMode);
+  if (blend) styles.blend = blend;
   // groups (FRAME + resizeToFit) never clip
   if ((n.type === 'FRAME' || n.type === 'SYMBOL' || n.type === 'INSTANCE') && n.frameMaskDisabled !== true && !isGroup) styles.clip = true;
   const fx = convertEffects(n.effects, ctx);
@@ -497,7 +611,13 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
     }
     const tar = n.textAutoResize;
     if (tar === 'WIDTH_AND_HEIGHT') { layout.w = 'hug'; layout.h = 'hug'; } else if (tar === 'HEIGHT') layout.h = 'hug';
-    if (n.textData?.styleOverrideTable?.length || n.textData?.characterStyleIDs?.some((x: number) => x)) raw.mixedTextStyles = true;
+    const runs = textRuns(n.textData, n, ctx);
+    if (runs.length) {
+      styles.runs = runs;
+      if (runs.some((r) => r.tsid || r.fsid)) use.r = true;
+    }
+    const link = linkOf(n.hyperlink);
+    if (link) styles.link = link;
     // list lines: bullets/numbers are not part of the characters
     const lines = (n.textData?.lines ?? []) as Any[];
     if (lines.some((l) => l?.lineType === 'ORDERED_LIST' || l?.lineType === 'UNORDERED_LIST')) {
@@ -515,6 +635,9 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
   let componentRef: string | null = null;
   if (n.type === 'INSTANCE') {
     componentRef = guidStr(n.symbolData?.symbolID);
+    // the instance shows its component scaled by this factor (Figma "scale" tool); saved derived data comes on top
+    const usf = n.symbolData?.uniformScaleFactor;
+    if (typeof usf === 'number' && isFinite(usf) && usf > 0 && Math.abs(usf - 1) > 1e-6) raw.usf = Math.round(usf * 1e6) / 1e6;
     const ov: Any[] = [];
     for (const o of (n.symbolData?.symbolOverrides ?? []) as Any[]) {
       const e = convertOverride(o, ctx);
@@ -572,7 +695,11 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
   }
   if (n.overrideKey) raw.ok = guidStr(n.overrideKey);
   if (n.isStateGroup) raw.isComponentSet = true;
-  if (n.mask) { raw.mask = true; if (n.maskType && n.maskType !== 'ALPHA') raw.maskType = n.maskType; }
+  if (n.mask) {
+    raw.mask = true;
+    const mt = n.maskType ?? (n.maskIsOutline === true ? 'OUTLINE' : undefined);
+    if (mt && mt !== 'ALPHA') raw.maskType = mt;
+  }
   // constraints of absolutely positioned layers (MIN = left/top is the default and never stored)
   if (n.horizontalConstraint && n.horizontalConstraint !== 'MIN') raw.hConstraint = n.horizontalConstraint;
   if (n.verticalConstraint && n.verticalConstraint !== 'MIN') raw.vConstraint = n.verticalConstraint;

@@ -151,4 +151,58 @@ describe.skipIf(!fileOf('open-peeps.fig'))('open-peeps.fig', () => {
     const db = await open('open-peeps.fig');
     expect((db.prepare(`SELECT COUNT(*) c FROM nodes WHERE type='other'`).get() as { c: number }).c).toBe(0);
   });
+  it('bold headings in a regular text are ranges (User Bio 0:2)', async () => {
+    const db = await open('open-peeps.fig');
+    const text = spec(db, '0:2');
+    expect(text).toContain('runs[11-80 "An app that manages different…" w400; 93-137 "Buttons hard to find, Alarm t…" w400]');
+    expect(renderSvg(db, '0:3', { assetsDir: '', format: 'fig' }).svg).toContain('<tspan font-weight="400">');
+  });
+});
+
+describe.skipIf(!fileOf('material3.fig'))('material3.fig (0.1.4)', () => {
+  it('link ranges take the colour of their fill style (54727:23654)', async () => {
+    const db = await open('material3.fig');
+    const l = spec(db, '54727:23654').split('\n').find((x) => x.includes('"Overview copy"'))!;
+    expect(l).toContain('runs[0-16 "Material Symbols" w600 underline color=$schemes-primary link=https://m3.material.io/styles/icons/ styles{fill:"M3/sys/light/primary"}');
+    expect(l).toContain('268-291 "Material Symbols plugin" underline color=$schemes-primary link=https://www.figma.com/community/plugin/1088610476491668236/material-symbols');
+  }, 120000);
+  it('MULTIPLY gradients and reverse paint order (56576:11826)', async () => {
+    const db = await open('material3.fig');
+    const text = spec(db, '56576:11826');
+    expect(first(text)).toContain('z-reverse');
+    expect(text).toMatch(/"Top app bar" frame .*fill=linear-gradient\([^)]*\)\|multiply/);
+    const svg = renderSvg(db, '56576:11826', { assetsDir: '', format: 'fig' }).svg;
+    expect(svg.match(/mix-blend-mode:multiply/g)?.length).toBe(2);
+    // the album art (last child) is painted first
+    expect(svg.indexOf('data-id="56576:11837"')).toBeLessThan(svg.indexOf('data-id="56576:11827"'));
+  }, 120000);
+});
+
+describe.skipIf(!fileOf('gold-preview.fig'))('gold-preview.fig (0.1.4)', () => {
+  it('a scaled instance (uniformScaleFactor 0.8908) keeps its own size and scales its content (1:3503)', async () => {
+    const text = spec(await open('gold-preview.fig'), '1:3503');
+    expect(first(text)).toContain('"Input" instance hug(393.57)×hug(39.38)');
+    // the component's 14 px label: 14 × 0.8908
+    expect(text).toContain('font=Inter/12.472/w500');
+  });
+});
+
+describe.skipIf(!fileOf('Complex.fig'))('Complex.fig', () => {
+  it('angular and diamond gradients are printed and drawn (frame "gradients" 73:3)', async () => {
+    const db = await open('Complex.fig');
+    const text = spec(db, '73:3');
+    expect(text).toContain('"Angular 1" rect 400×400 @50,1050 fill=conic-gradient(from 180deg at 50% 50%, #d70000 0%, #000000 50.9%, #ffffff 100%)');
+    expect(text).toContain('"Diamond 1" rect 400×400 @50,1550 fill=diamond-gradient(200px 200px at 50% 50%');
+    const r = renderSvg(db, '79:11', { assetsDir: '', format: 'fig' });
+    expect(r.notes.join(' ')).not.toMatch(/drawn as (radial|linear)/);
+    expect(r.svg).toMatch(/<pattern [^>]*><g transform="translate/);
+  });
+});
+
+describe.skipIf(!fileOf('stacks_wrap.fig'))('fig2sketch stacks_wrap.fig (Display-P3)', () => {
+  it('converts Display-P3 colours to sRGB and says so', async () => {
+    const db = await open('stacks_wrap.fig');
+    expect(styles(db, '1:5').fill).toEqual([{ k: 'solid', c: '#ff9433' }]);
+    expect(spec(db, '1:5')).toMatch(/^# colours: the document is Display-P3/m);
+  });
 });

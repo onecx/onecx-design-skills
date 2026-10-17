@@ -15,6 +15,8 @@ done
 for f in basic-shapes clip-test medium-complex open-peeps; do
   curl -fLo $f.fig https://raw.githubusercontent.com/OpenFig-org/openfig-cli/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/$f.fig
 done
+# Octopus (opendesigndev) Figma parser test asset (pinned commit)
+curl -fLo Complex.fig https://raw.githubusercontent.com/opendesigndev/octopus/c3751d2d458354be118d138df8eb60b8be4bb8d3/packages/octopus-fig/test/integration/figma-parser/assets/aoZAhPTVzGi1rXnU35YPVb/Complex.fig
 # fig2sketch test data (pinned commit), into f2s/
 for f in broken_images corners noise_and_grain prototyping prototyping_components prototyping_swaps_and_instances sections stacks_wrap structure vector; do
   curl -fLo f2s/$f.fig https://raw.githubusercontent.com/sketch-hq/fig2sketch/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/$f.fig
@@ -39,6 +41,7 @@ redistributing a file.
 | `clip-test.fig` | [OpenFig-org/openfig-cli](https://github.com/OpenFig-org/openfig-cli/blob/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/clip-test.fig) | MIT (repository LICENSE) | `9007435e519d652f7b52da67825003d024571cfc24897e6d03c926ae31efa6ed` |
 | `medium-complex.fig` | [OpenFig-org/openfig-cli](https://github.com/OpenFig-org/openfig-cli/blob/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/medium-complex.fig) | MIT (repository LICENSE) | `5126634984cb7a441c8c12583f0cef916cf01dee8084c107a2d6abf75b54928e` |
 | `open-peeps.fig` | [OpenFig-org/openfig-cli](https://github.com/OpenFig-org/openfig-cli/blob/05f662bfad105d3fd8da8e0cdc0b4e0113e69799/test/fixtures/figs/reference/open-peeps.fig) | MIT (repository LICENSE); no separate licence stated for the illustration content | `2493c670da109daa17ebde8b89a42ae629f37bdfc3565990eef155822f41be3e` |
+| `Complex.fig` | [opendesigndev/octopus `packages/octopus-fig/test/integration/figma-parser/assets`](https://github.com/opendesigndev/octopus/blob/c3751d2d458354be118d138df8eb60b8be4bb8d3/packages/octopus-fig/test/integration/figma-parser/assets/aoZAhPTVzGi1rXnU35YPVb/Complex.fig) | Apache-2.0 (repository LICENSE) | `151ee2dcafd30c4b17ef432700ed11e92e8acb8591f9542de4a57937a3d8c81d` |
 | `f2s/vector.fig` | [sketch-hq/fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/vector.fig) | MIT (repository LICENSE) | `3802d80f8581af7d4b1aa90ccf946dc1c656fb281daa22cd3eb4b8cad7cfc865` |
 | `f2s/broken_images.fig` | [fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/broken_images.fig) | MIT | `0f7534d05369a6739375e6245a9a51a80c30d34999f90d1c817cfcbef2559f79` |
 | `f2s/structure.fig` | [fig2sketch `tests/data`](https://github.com/sketch-hq/fig2sketch/blob/4eddfd4f4e6185264ab59a3a65922a33843fc34d/tests/data/structure.fig) | MIT | `2625997d999ecec64de7f8f8c2e4c57a714f1006e362ba79a118ae9606113b50` |

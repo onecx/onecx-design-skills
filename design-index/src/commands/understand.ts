@@ -2,6 +2,7 @@
 import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
 import { getMeta } from '../db.js';
+import { P3_NOTE } from './spec.js';
 import { Out, q, safeJson } from '../output.js';
 import { fmtBytes } from '../util.js';
 import { loadTokens, modesOf } from '../tokens.js';
@@ -29,6 +30,7 @@ export function summary(db: DatabaseSync, out: Out): void {
   const nPages = count('SELECT COUNT(*) c FROM pages');
   out.head(`# Summary · ${path.basename(getMeta(db, 'source') ?? '')} (${fmt}, ${fmtBytes(Number(getMeta(db, 'source_size') ?? 0))}, ${getMeta(db, 'node_count')} nodes)`);
   out.head('Note: statements marked "derived" or "~" are heuristics from names/structure and must be confirmed by the user.');
+  if (getMeta(db, 'color_profile') === 'DISPLAY_P3') out.head(`Note: ${P3_NOTE}.`);
 
   // 1. structure
   const boards = db.prepare(`SELECT board_name, COUNT(*) c, MIN(node_id) first FROM screens GROUP BY board_name ORDER BY MIN(ord)`).all() as { board_name: string; c: number; first: string }[];

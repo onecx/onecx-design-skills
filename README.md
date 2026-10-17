@@ -75,18 +75,39 @@ Notes
 `npm test`: vitest tests on small generated fixtures (no client data); with `DESIGN_INDEX_FIXTURES=<folder>` also oracle checks against public real Figma exports
 (`design-index/tests/fixtures/README.md` lists the downloads and licences). Generated-fixture coverage: comments/unknown fields/unknown node types in .pen, streamed data-URI images, hashing/cache skip,
 sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs,
-and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms).
+and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms)
+and 0.1.4 (mixed text styles and links, uniform instance scale, blend modes, angular/diamond gradients, mask types, Display-P3, explicit modes for numbers/text,
+non-unique property definition ids, blobs before nodes).
 Manual runs against real client files (not part of this repository) and the synthetic 100/200/400 MB files: see the table above.
 An end-to-end check implemented four real frames in React and Angular (pixel-identical results, 2.8-11.6 % pixel difference to the offline design render); that material contains client assets and is kept out of this repository.
 
 ## Known limits
 - `screenshot` is an approximation (auto-layout re-solved for .pen, text measured heuristically, icon libraries and WebP are placeholders, hidden items do not reflow in .fig instances).
-- .fig instances from libraries that are not inside the file are drawn as boxes; variant overrides and instance resizing are only partly applied.
+- .fig instances from libraries that are not inside the file are drawn as boxes; instance resizing without Figma's saved layout is not re-laid out.
+- .fig `screenshot` approximations: angular gradients (a fan of wedges), Figma-only blend modes `linear-burn`/`linear-dodge` (drawn as multiply/screen),
+  cap-height trim (cap height taken as 0.7 × font size), a thinner stroke-weight override on an outline icon without a saved outline (drawn at the component weight),
+  gradient/image fills of text ranges (only solid range colours are drawn), stroke paint blend modes (printed, not drawn). Display-P3 files: images stay P3.
 - `.pen` schema 2.21 is the documented reference; other versions are read with warnings (2.18 was tested).
 - Heuristics (screen detection, purpose, flows, audit) are guesses and are always marked; they exist to produce questions, not facts.
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
 
 ## Changelog
+- **0.1.4** — the `.fig` findings 0.1.3 left open (same research report).
+  - Mixed text styles: `characterStyleIDs` + `styleOverrideTable` become ranges (`runs[6-9 "big" w700 underline color=… link=…]` in `spec`, one
+    `<tspan>` per range in `screenshot`), including each range's own text/fill style (material3 link ranges are purple via "M3/sys/light/primary",
+    open-peeps headings bold). Hyperlinks per text and per range (`link=<url>` / `link=#<node-id>`); `leadingTrim: CAP_HEIGHT` → `trim=cap`.
+  - Instances: `uniformScaleFactor` scales the instance content (sizes, positions, strokes, radii, effects, font sizes, gaps, paddings) before Figma's
+    saved derived data; property-definition ids, which are not unique in a document, are resolved within the component's own ancestry (defaults and
+    property names); bound texts and numbers resolve under the nearest explicit variable mode (`r=$radius{12}`, also inside instances).
+  - Paints: layer and paint blend modes (`blend=multiply`, `paint|multiply`, drawn with `mix-blend-mode`); `stackReverseZIndex` paint order (`z-reverse`);
+    angular gradients drawn as a sweep from the first handle (clockwise) and diamond gradients as L1 bands (`conic-gradient(…)` / `diamond-gradient(…)` in `spec`).
+  - Masks: OUTLINE (shape only) and LUMINANCE (luminance × alpha) besides ALPHA; frame clips inside a mask are drawn as pattern fills (resvg dropped clipped
+    layers whose content reaches far outside the canvas).
+  - Display-P3 documents: colours are converted to sRGB everywhere (hex, tokens, rendering; embedded images stay P3); `spec`, `summary` and `tokens` say so.
+  - Scaled instances print `scale=F` (values below are already scaled). Explicit variable modes match by collection and mode name.
+  - Kiwi: geometry blobs that come before the nodes in the message are read in a second pass. An instance that detaches a fill style without paints of
+    its own shows the layer's own paints; a heavier stroke-weight override on an outline icon without a saved outline widens the outline.
+  - Index schema 24 (re-ingest happens automatically). nuxtui (82 MB) ingest unchanged: 37-39 s, peak 1.25-1.26 GB (0.1.3: 38 s, 1.44 GB).
 - **0.1.3** — `.fig` field semantics checked against what Figma itself saved in 31 real files (laid-out sizes, saved glyph fonts, outlines); see the research report referenced in the PR.
   - Auto layout: a missing `stackPrimarySizing` means **hug** (hug buttons/chips were reported fixed); missing right/bottom padding is 0 (was mirrored);
     `SPACE_EVENLY` is Figma's space-between (`jc=between`, gap ignored, a single child is centred); `SPACE_AROUND`/`SPACE_EVENLY_CSS` → `around`/`evenly`;

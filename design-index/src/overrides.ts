@@ -49,6 +49,8 @@ export function mergeStyles(a: Styles, b: Styles): Styles {
   }
   if (b.vars || a.vars) out.vars = { ...a.vars, ...b.vars };
   if (b.fill && !b.fill.length) delete out.fill;
+  if ((b as { blend?: unknown }).blend === null) delete out.blend;
+  if ((b as { link?: unknown }).link === null) delete out.link;
   if (b.fx && !b.fx.length) delete out.fx;
   if (typeof b.op === 'number' && b.op >= 1) delete out.op;
   if (b.clip === false) delete out.clip;

@@ -35,8 +35,16 @@ enum VariableField { MISSING = 0; CORNER_RADIUS = 1; STACK_SPACING = 5; STACK_PA
   VISIBLE = 10; TEXT_DATA = 11; WIDTH = 12; HEIGHT = 13; RECTANGLE_TOP_LEFT_CORNER_RADIUS = 14; RECTANGLE_TOP_RIGHT_CORNER_RADIUS = 15; RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS = 16;
   RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS = 17; FONT_FAMILY = 28; OPACITY = 31; FONT_SIZE = 32; LINE_HEIGHT = 36; OVERRIDDEN_SYMBOL_ID = 37; SLOT_CONTENT_ID = 40; }
 enum VariableDataType { BOOLEAN = 0; FLOAT = 1; STRING = 2; ALIAS = 3; COLOR = 4; PROP_REF = 5; }
+enum BlendMode { PASS_THROUGH = 0; NORMAL = 1; DARKEN = 2; MULTIPLY = 3; LINEAR_BURN = 4; COLOR_BURN = 5; LIGHTEN = 6; SCREEN = 7; LINEAR_DODGE = 8;
+  COLOR_DODGE = 9; OVERLAY = 10; SOFT_LIGHT = 11; HARD_LIGHT = 12; DIFFERENCE = 13; EXCLUSION = 14; HUE = 15; SATURATION = 16; COLOR = 17; LUMINOSITY = 18; }
+enum LeadingTrim { NONE = 0; CAP_HEIGHT = 1; }
+enum MaskType { ALPHA = 0; OUTLINE = 1; LUMINANCE = 2; }
+enum ColorProfile { SRGB = 0; DISPLAY_P3 = 1; }
+message Hyperlink { string url = 1; GUID guid = 2; }
 message AssetRef { string key = 1; }
-message SetRef { AssetRef assetRef = 1; }
+message SetRef { AssetRef assetRef = 1; GUID guid = 2; }
+message VarModeEntry { SetRef variableSetID = 1; GUID variableModeID = 2; }
+message VarModeMap { VarModeEntry[] entries = 1; }
 message StyleId { GUID guid = 1; AssetRef assetRef = 2; }
 enum StackMode { NONE = 0; HORIZONTAL = 1; VERTICAL = 2; GRID = 3; }
 message ParentIndex { GUID guid = 1; string position = 2; }
@@ -49,11 +57,11 @@ message VarDataMsg { VarAnyValue value = 1; VariableDataType dataType = 2; }
 message VarMapEntry { VariableField variableField = 1; VarDataMsg variableData = 2; }
 message VarMap { VarMapEntry[] entries = 1; }
 message ColorVar { VarDataMsg value = 1; }
-message Paint { PaintType type = 1; Color color = 2; float opacity = 3; bool visible = 4; Matrix transform = 5; ColorStop[] stops = 6; ImageScaleMode imageScaleMode = 7; Image image = 8; VarDataMsg colorVar = 9; }
+message Paint { PaintType type = 1; Color color = 2; float opacity = 3; bool visible = 4; Matrix transform = 5; ColorStop[] stops = 6; ImageScaleMode imageScaleMode = 7; Image image = 8; VarDataMsg colorVar = 9; BlendMode blendMode = 10; }
 message Effect { EffectType type = 1; Vector offset = 2; float radius = 3; Color color = 4; bool visible = 5; float spread = 6; }
 message FontName { string family = 1; string style = 2; string postscript = 3; }
 message TextLine { LineType lineType = 1; uint indentationLevel = 2; }
-message TextData { string characters = 1; TextLine[] lines = 2; }
+message TextData { string characters = 1; TextLine[] lines = 2; uint[] characterStyleIDs = 3; NodeChange[] styleOverrideTable = 4; }
 message FontMeta { FontName key = 1; float fontLineHeight = 2; float fontWeight = 3; }
 message DerivedText { FontMeta[] fontMetaData = 1; }
 message ArcData { float startingAngle = 1; float endingAngle = 2; float innerRadius = 3; }
@@ -62,11 +70,12 @@ message PropRef { GUID defID = 1; PropField componentPropNodeField = 2; }
 message SymbolIdValue { GUID guid = 1; }
 message PropValue { bool boolValue = 1; TextData textDataValue = 2; SymbolIdValue symbolIdValue = 3; }
 message PropAssign { GUID defID = 1; PropValue value = 2; }
-message PropDefMsg { GUID id = 1; string name = 2; PropValue initialValue = 3; GUID parentPropDefId = 4; VarDataMsg varValue = 5; }
+message PropDefMsg { GUID id = 1; string name = 2; PropValue initialValue = 3; GUID parentPropDefId = 4; VarDataMsg varValue = 5; PropType type = 6; }
+enum PropType { BOOL = 0; TEXT = 1; INSTANCE_SWAP = 3; VARIANT = 4; }
 message Geom { uint commandsBlob = 1; WindingRule windingRule = 2; uint styleID = 3; }
 message Derived { GUIDPath guidPath = 1; Vector size = 2; Matrix transform = 3; Geom[] strokeGeometry = 4; Geom[] fillGeometry = 5; }
 message GUIDPath { GUID[] guids = 1; }
-message SymbolData { GUID symbolID = 1; NodeChange[] symbolOverrides = 2; }
+message SymbolData { GUID symbolID = 1; NodeChange[] symbolOverrides = 2; float uniformScaleFactor = 3; }
 message ModeRef { GUID id = 1; string name = 2; }
 message VarValue { Color colorValue = 1; float floatValue = 2; string textValue = 3; }
 message VarData { VarValue value = 1; }
@@ -90,10 +99,14 @@ message NodeChange {
   Geom[] fillGeometry = 68; Geom[] strokeGeometry = 69; VectorData vectorData = 70; ArcData arcData = 71; uint count = 72; float rectangleTopRightCornerRadius = 73;
   float rectangleBottomRightCornerRadius = 74; float rectangleBottomLeftCornerRadius = 75; float opacity = 76; StrokeAlign strokeAlign = 77; float[] dashPattern = 78; uint styleID = 79;
   float borderRightWeight = 80; float borderBottomWeight = 81; float borderLeftWeight = 82;
+  Hyperlink hyperlink = 83; LeadingTrim leadingTrim = 84; BlendMode blendMode = 85; bool isOverrideOverTextStyle = 86; MaskType maskType = 87;
+  bool stackReverseZIndex = 88; ColorProfile documentColorProfile = 89; VarModeMap variableModeBySetMap = 90; bool isStateGroup = 91; bool maskIsOutline = 92;
 }
 message Blob { byte[] bytes = 1; }
 message Message { NodeChange[] nodeChanges = 1; Blob[] blobs = 2; }
 `;
+/** Kiwi writes fields in declaration order: this variant puts the blobs before the nodes */
+const BLOBS_FIRST = SCHEMA.replace('message Message { NodeChange[] nodeChanges = 1; Blob[] blobs = 2; }', 'message Message { Blob[] blobs = 2; NodeChange[] nodeChanges = 1; }');
 
 export type PV = { b: boolean } | { t: string } | { sym: [number, number] };
 export interface Assign { def: [number, number]; v: PV }
@@ -105,7 +118,7 @@ export interface FigNode {
   overrides?: { path: [number, number][]; fontSize?: number; fill?: [number, number, number]; text?: string; visible?: boolean; swap?: [number, number]; assign?: Assign[]; extra?: Record<string, unknown> }[];
   /** any further NodeChange fields, in Figma's own names and shapes (see the schema above); they win over the shorthands */
   extra?: Record<string, unknown>;
-  ok?: [number, number]; defs?: { id: [number, number]; init?: PV }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number; noStroke?: boolean; extra?: Record<string, unknown> }[];
+  ok?: [number, number]; defs?: { id: [number, number]; init?: PV; name?: string; parent?: [number, number]; type?: string }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number; noStroke?: boolean; extra?: Record<string, unknown> }[];
   radius?: { cornerRadius?: number; tl?: number; indep?: boolean }; stroke?: { w: number; top?: number; indep?: boolean }; visibleFlag?: boolean;
   modes?: { id: [number, number]; name: string }[]; key?: string; setKey?: string; varType?: 'COLOR' | 'FLOAT' | 'STRING'; values?: { mode: [number, number]; color?: [number, number, number, number]; num?: number; str?: string }[];
 }
@@ -122,8 +135,8 @@ export function pathBlob(cmds: number[][]): Uint8Array {
   return new Uint8Array(Buffer.concat(parts));
 }
 
-export function buildFig(nodes: FigNode[], opts: { version?: number; blobs?: Uint8Array[]; magic?: string } = {}): Buffer {
-  const schemaObj = parseSchema(SCHEMA);
+export function buildFig(nodes: FigNode[], opts: { version?: number; blobs?: Uint8Array[]; magic?: string; blobsFirst?: boolean } = {}): Buffer {
+  const schemaObj = parseSchema(opts.blobsFirst ? BLOBS_FIRST : SCHEMA);
   const schema: any = compileSchema(schemaObj);
   const msg = {
     nodeChanges: nodes.map((n) => ({
@@ -134,7 +147,7 @@ export function buildFig(nodes: FigNode[], opts: { version?: number; blobs?: Uin
       textData: n.text != null ? { characters: n.text } : undefined, fontSize: n.text != null ? 16 : undefined,
       stackMode: n.stack, stackSpacing: n.gap, visible: n.visibleFlag ?? true,
       overrideKey: n.ok ? g(n.ok) : undefined,
-      componentPropDefs: n.defs?.map((d) => ({ id: g(d.id), name: 'p', initialValue: d.init ? pv(d.init) : undefined })),
+      componentPropDefs: n.defs?.map((d) => ({ id: g(d.id), name: d.parent && !d.name ? undefined : d.name ?? 'p', initialValue: d.init ? pv(d.init) : undefined, parentPropDefId: d.parent ? g(d.parent) : undefined, type: d.type })),
       componentPropRefs: n.refs?.map((r) => ({ defID: g(r.def), componentPropNodeField: r.field })),
       componentPropAssignments: n.assign?.map((a) => ({ defID: g(a.def), value: pv(a.v) })),
       derivedSymbolData: n.derived?.map((d) => ({ guidPath: { guids: d.path.map(g) }, size: { x: d.w, y: d.h }, transform: { m00: 1, m01: 0, m02: d.x, m10: 0, m11: 1, m12: d.y }, strokeGeometry: d.noStroke ? [] : undefined, ...d.extra })),

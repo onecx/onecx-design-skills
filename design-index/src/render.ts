@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DatabaseSync } from './sqlite.js';
-import type { Layout, Paint, Styles } from './model.js';
+import type { Layout, Paint, Styles, TextRun } from './model.js';
 import { safeJson } from './output.js';
 import { TokenIndex } from './tokens.js';
 import { Evaluator, TooBig, type VNode } from './instances.js';
@@ -19,6 +19,8 @@ interface Row {
 interface R {
   row: Row; l: Layout; s: Styles; raw: Record<string, any>; kids: R[];
   x: number; y: number; w: number; h: number; lines?: string[]; geom?: string; solved?: boolean; text?: string | null; hide?: boolean;
+  /** size a saved occurrence outline was stored at (the node was scaled afterwards) */
+  geomBox?: [number, number];
   /** explicit variable modes in effect (mode names, outermost first) */
   modes?: string[];
 }
@@ -28,6 +30,35 @@ export interface RenderOpts { assetsDir: string; format: 'pen' | 'fig'; backgrou
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const f2 = (n: number) => String(Math.round(n * 100) / 100);
+const f4 = (n: number) => String(Math.round(n * 10000) / 10000);
+
+/** CSS mix-blend-mode for a stored blend mode; Figma's linear burn/dodge have no CSS/resvg equivalent (closest: multiply/screen). */
+export function cssBlend(b: string | undefined): { mode?: string; approx?: string } {
+  if (!b || b === 'normal' || b === 'pass-through') return {};
+  if (b === 'linear-burn') return { mode: 'multiply', approx: b };
+  if (b === 'linear-dodge') return { mode: 'screen', approx: b };
+  return { mode: b };
+}
+
+/** rgba of a #rrggbb[aa] colour */
+function rgbaOf(c: string): [number, number, number, number] {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(c);
+  if (!m) return [136, 136, 136, 1];
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), m[4] ? parseInt(m[4], 16) / 255 : 1];
+}
+/** Colour of a gradient ramp at t (stops clamp at both ends, linear interpolation in between). */
+export function rampAt(stops: [string, number][], t: number): { c: string; o: number } {
+  const hex = (v: number) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
+  if (!stops.length) return { c: '#888888', o: 1 };
+  let a = stops[0], b = stops[stops.length - 1];
+  if (t <= a[1]) b = a;
+  else if (t >= b[1]) a = b;
+  else for (let i = 0; i < stops.length - 1; i++) if (t >= stops[i][1] && t <= stops[i + 1][1]) { a = stops[i]; b = stops[i + 1]; break; }
+  const k = b[1] > a[1] ? (t - a[1]) / (b[1] - a[1]) : 0;
+  const ca = rgbaOf(a[0]), cb = rgbaOf(b[0]);
+  const m = ca.map((v, i) => v + (cb[i] - v) * k);
+  return { c: `#${hex(m[0])}${hex(m[1])}${hex(m[2])}`, o: Math.round(m[3] * 1000) / 1000 };
+}
 
 // ---- text measurement (heuristic, Open Sans-like proportions) ---------------------------------
 function charW(ch: string, fs: number, bold: boolean): number {
@@ -57,6 +88,8 @@ function wrap(text: string, maxW: number, fs: number, bold: boolean, ls: number)
   return out;
 }
 
+/** cap height as a fraction of the font size (Open Sans 0.714, Inter 0.727, Roboto 0.711) */
+const CAP_HEIGHT = 0.7;
 const numOf = (v: unknown, d = 0): number => (typeof v === 'number' && isFinite(v) ? v : d);
 /** text as displayed: Figma keeps the source characters and applies the case at render time */
 export function withCase(text: string, c?: string): string {
@@ -65,6 +98,29 @@ export function withCase(text: string, c?: string): string {
   if (c === 'title') return text.replace(/(^|\s)(\p{L})/gu, (_m, a: string, b: string) => a + b.toUpperCase());
   return text;
 }
+/**
+ * Text as displayed when ranges may set their own case: each code point is mapped with the case of its range (or the text's),
+ * `src[k]` = the source UTF-16 index of displayed unit k. Title case looks at the previous source character.
+ */
+export function casedWithMap(source: string, base: string | undefined, runs: { i: number; n: number; font?: { case?: string | null } }[]): { text: string; src: number[] } {
+  let text = '';
+  const src: number[] = [];
+  for (let i = 0; i < source.length; ) {
+    const cp = source.codePointAt(i)!;
+    const ch = String.fromCodePoint(cp);
+    const run = runs.find((x) => i >= x.i && i < x.i + x.n);
+    const c = run?.font && 'case' in run.font ? run.font.case ?? undefined : base;
+    let out = ch;
+    if (c === 'upper' || c === 'small_caps' || c === 'small_caps_forced') out = ch.toUpperCase();
+    else if (c === 'lower') out = ch.toLowerCase();
+    else if (c === 'title' && (i === 0 || /\s/.test(source[i - 1]))) out = ch.toUpperCase();
+    text += out;
+    for (let k = 0; k < out.length; k++) src.push(i);
+    i += ch.length;
+  }
+  return { text, src };
+}
+
 /** line pitch in px: explicit multiplier, else the font's normal line height (Figma "Auto" rounds it to whole px) */
 function linePx(f: NonNullable<Styles['font']>, fs: number, fallback: number): number {
   if (typeof f.lh === 'number') return f.lh * fs;
@@ -155,17 +211,37 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   let nNodes = 0;
   const toR = (v: VNode, inherited: string[] = []): R => {
     nNodes++;
-    const modes = v.modes ? [...inherited, ...v.modes.map((m) => m.split('=').slice(1).join('='))] : inherited;
+    const modes = v.modes ? [...inherited, ...v.modes] : inherited;
     const row = v.row as unknown as Row;
     const r: R = { row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0, modes };
     if (row.type === 'path' || row.type === 'boolean' || row.type === 'polygon' || (row.type === 'ellipse' && r.raw.arc)) {
       const g = qGeom.get(v.geomKey ?? row.id) as { data: string } | undefined;
       if (g) geoms.set(row.id + (v.geomKey ?? ''), g.data);
-      if (v.geomKey) r.geom = v.geomKey;
+      if (v.geomKey) { r.geom = v.geomKey; r.geomBox = v.geomBox; }
     }
+    if (modes.length && r.s.vars) modeNumbers(r, modes);
     r.kids = v.kids.filter((k) => !k.hidden).map((k) => toR(k, modes));
     return r;
   };
+  /** numbers bound to variables take their value under the explicit modes in effect (saved values are default-mode values) */
+  function modeNumbers(r: R, modes: string[]): void {
+    const v = r.s.vars!;
+    const num = (k: string): number | undefined => { const x = v[k] ? tokens.modeValue(v[k], modes) : undefined; return typeof x === 'number' ? x : undefined; };
+    const s = { ...r.s };
+    let changed = false;
+    const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => num(k) ?? num('radius'));
+    if (corners.some((x) => x !== undefined)) {
+      const cur = Array.isArray(s.r) ? s.r : [s.r ?? 0, s.r ?? 0, s.r ?? 0, s.r ?? 0];
+      s.r = corners.map((x, i) => x ?? cur[i]); changed = true;
+    }
+    const op = num('opacity');
+    if (op !== undefined) { s.op = op; changed = true; }
+    const sw = num('stroke-weight');
+    if (sw !== undefined && s.stroke) { s.stroke = { ...s.stroke, w: sw }; changed = true; }
+    const fs = num('font-size');
+    if (fs !== undefined && s.font) { s.font = { ...s.font, s: fs }; changed = true; }
+    if (changed) { r.s = s; notes.add('Numbers bound to variables drawn with their value under the explicit variable mode'); }
+  }
   const root = toR(vtree);
   const use = { length: nNodes };
   if (opts.format === 'fig' && nNodes > 1) notes.add('Instances expanded from their component (component properties, overrides, swaps and saved layout applied)');
@@ -301,6 +377,8 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   const fonts = new Set<string>();
 
   let curModes: string[] | undefined;
+  /** > 0 while drawing a mask or the layers a mask applies to */
+  let maskDepth = 0;
   const colorOf = (p: Paint & { k: 'solid' }): { c: string; o: number } | undefined => {
     let c = (p.v ? tokens.colorValue(p.v, curModes) : undefined) ?? p.c;
     if (!c) { if (p.v) notes.add(`Token $${p.v} has no color value`); return undefined; }
@@ -334,8 +412,54 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     return roundedRect(0, 0, w, h, r.s.r, 0, extra);
   }
 
+  /**
+   * Angular (sweep, clockwise from the first handle) and diamond (L1 distance, corners on the handles) gradients, which SVG/resvg
+   * lack, as a pattern in the node's coordinates: a fan of thin wedges / four quadrants with linear gradients, drawn in the
+   * gradient's own (u,v) space (centre + u·axis1 + v·axis2).
+   */
+  function sweepPattern(p: Paint & { k: 'grad' }, w: number, h: number): string {
+    const hp = p.p && p.p.length >= 6 ? p.p : [0.5, 0.5, 1, 0.5, 0.5, 1];
+    const [cx, cy, ax, ay, bx, by] = [hp[0] * w, hp[1] * h, hp[2] * w, hp[3] * h, hp[4] * w, hp[5] * h];
+    const m = [ax - cx, ay - cy, bx - cx, by - cy, cx, cy];
+    const det = m[0] * m[3] - m[2] * m[1];
+    const stops = p.stops.map(([c, pos]) => [c.startsWith('$') ? tokens.colorValue(c.slice(1)) ?? '#888888' : c, pos] as [string, number]);
+    // reach of the pattern in (u,v): far enough to cover the pattern tile (3×3 boxes around the node)
+    let K = 4;
+    if (Math.abs(det) > 1e-9) {
+      for (const [x, y] of [[-w, -h], [2 * w, -h], [-w, 2 * h], [2 * w, 2 * h]]) {
+        const dx = x - cx, dy = y - cy;
+        const u = (m[3] * dx - m[2] * dy) / det, v = (-m[1] * dx + m[0] * dy) / det;
+        K = Math.max(K, Math.hypot(u, v) * 1.2);
+      }
+    }
+    const body: string[] = [];
+    const fillOf = (c: { c: string; o: number }) => `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}`;
+    if (p.t === 'angular') {
+      const N = 180;
+      for (let k = 0; k < N; k++) {
+        // wedges overlap slightly so no hairline gaps show between them
+        const a0 = (2 * Math.PI * k) / N, a1 = (2 * Math.PI * (k + 1.6)) / N;
+        body.push(`<path d="M0 0L${f4(K * Math.cos(a0))} ${f4(K * Math.sin(a0))}L${f4(K * Math.cos(a1))} ${f4(K * Math.sin(a1))}Z" ${fillOf(rampAt(stops, (k + 0.5) / N))}/>`);
+      }
+    } else {
+      const e = 1.5 / Math.max(1e-6, Math.min(Math.hypot(m[0], m[1]), Math.hypot(m[2], m[3])));
+      for (const [su, sv] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) {
+        const lid = `g${++uid}`;
+        const st = stops.map(([c, pos]) => { const x = rgbaOf(c); return `<stop offset="${f2(pos)}" stop-color="${c.slice(0, 7)}"${x[3] < 1 ? ` stop-opacity="${f2(x[3])}"` : ''}/>`; }).join('');
+        defs.push(`<linearGradient id="${lid}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${su / 2}" y2="${sv / 2}">${st}</linearGradient>`);
+        // each quadrant reaches ~1.5 px into its neighbours so no anti-aliased seam shows along the axes
+        const ex = -su * e, ey = -sv * e;
+        body.push(`<path d="M${f4(ex)} ${f4(ey)}L${f4(su * K)} ${f4(ey)}L${f4(su * K)} ${f4(sv * K)}L${f4(ex)} ${f4(sv * K)}Z" fill="url(#${lid})"/>`);
+      }
+    }
+    const pid = `p${++uid}`;
+    defs.push(`<pattern id="${pid}" patternUnits="userSpaceOnUse" x="${f2(-w)}" y="${f2(-h)}" width="${f2(3 * w)}" height="${f2(3 * h)}"><g transform="translate(${f2(w)} ${f2(h)}) matrix(${m.map(f4).join(' ')})">${body.join('')}</g></pattern>`);
+    return pid;
+  }
+
   /** Gradient definition in the node's coordinates (box w×h); Figma's handles when saved, else a direction through the centre. */
   function gradientDef(p: Paint & { k: 'grad' }, w: number, h: number): string {
+    if (p.t === 'angular' || p.t === 'diamond') return sweepPattern(p, Math.max(w, 0.01), Math.max(h, 0.01));
     const gid = `g${++uid}`;
     const stops = p.stops.map(([c, pos]) => {
       const col = c.startsWith('$') ? tokens.colorValue(c.slice(1)) ?? '#888888' : c;
@@ -348,12 +472,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       if (hp && hp.length >= 4) [x1, y1, x2, y2] = [hp[0] * w, hp[1] * h, hp[2] * w, hp[3] * h];
       else { const a = ((p.a ?? 0) * Math.PI) / 180; const dx = -Math.sin(a), dy = -Math.cos(a); [x1, y1, x2, y2] = [(0.5 - dx / 2) * w, (0.5 - dy / 2) * h, (0.5 + dx / 2) * w, (0.5 + dy / 2) * h]; }
       defs.push(`<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="${f2(x1)}" y1="${f2(y1)}" x2="${f2(x2)}" y2="${f2(y2)}">${stops}</linearGradient>`);
-      if (p.t === 'angular') notes.add('Angular gradient drawn as linear');
     } else if (hp && hp.length >= 6) {
       const [cx, cy, ax, ay, bx, by] = [hp[0] * w, hp[1] * h, hp[2] * w, hp[3] * h, hp[4] * w, hp[5] * h];
       defs.push(`<radialGradient id="${gid}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(${[ax - cx, ay - cy, bx - cx, by - cy, cx, cy].map(f2).join(' ')})">${stops}</radialGradient>`);
-      if (p.t === 'angular') notes.add('Angular gradient drawn as radial');
-      if (p.t === 'diamond') notes.add('Diamond gradient drawn as radial');
     } else defs.push(`<radialGradient id="${gid}" cx="0.5" cy="0.5" r="0.5">${stops}</radialGradient>`);
     return gid;
   }
@@ -361,10 +482,16 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   /** fill attribute for a paint list (first solid or gradient paint), in node coordinates */
   function fillAttr(ps: Paint[] | undefined, w: number, h: number): string {
     for (const p of ps ?? []) {
-      if (p.k === 'solid') { const c = colorOf(p); if (c) return `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}`; }
-      if (p.k === 'grad') return `fill="url(#${gradientDef(p, w, h)})"`;
+      if (p.k === 'solid') { const c = colorOf(p); if (c) return `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}${blendAttr(p.bm)}`; }
+      if (p.k === 'grad') return `fill="url(#${gradientDef(p, w, h)})"${blendAttr(p.bm)}`;
     }
     return 'fill="none"';
+  }
+  /** style attribute for a paint or layer blend mode (resvg supports the CSS separable and non-separable modes) */
+  function blendAttr(bm: string | undefined): string {
+    const b = cssBlend(bm);
+    if (b.approx) notes.add(`Blend mode ${b.approx} drawn as ${b.mode} (no SVG equivalent)`);
+    return b.mode ? ` style="mix-blend-mode:${b.mode}"` : '';
   }
 
   function paintsSvg(r: R, w: number, h: number): string {
@@ -372,9 +499,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     for (const p of r.s.fill ?? []) {
       if (p.k === 'solid') {
         const c = colorOf(p);
-        if (c) parts.push(shape(r, w, h, `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}`));
+        if (c) parts.push(shape(r, w, h, `fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}${blendAttr(p.bm)}`));
       } else if (p.k === 'grad') {
-        parts.push(shape(r, w, h, `fill="url(#${gradientDef(p, w, h)})"`));
+        parts.push(shape(r, w, h, `fill="url(#${gradientDef(p, w, h)})"${blendAttr(p.bm)}`));
       } else if (p.k === 'img') {
         // images are pattern fills of the node's shape: no clip-path layer (resvg drops clipped layers inside masks when the
         // content reaches far outside the canvas, which is exactly the image-in-mask case)
@@ -398,7 +525,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
         if (body) {
           const pid = `p${++uid}`;
           defs.push(`<pattern id="${pid}" patternUnits="userSpaceOnUse" x="0" y="0" width="${f2(w)}" height="${f2(h)}">${body}</pattern>`);
-          parts.push(shape(r, w, h, `fill="url(#${pid})"${op}`));
+          parts.push(shape(r, w, h, `fill="url(#${pid})"${op}${blendAttr(p.bm)}`));
         } else {
           notes.add(`Image missing (${p.url ?? p.asset ?? '?'}): gray placeholder`);
           parts.push(shape(r, w, h, 'fill="#d0d0d0"') + `<path d="M0 0L${f2(w)} ${f2(h)}M${f2(w)} 0L0 ${f2(h)}" stroke="#a0a0a0" stroke-width="1"/>`);
@@ -446,9 +573,14 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const al = f.al === 'center' ? 'middle' : f.al === 'right' ? 'end' : 'start';
     const x = al === 'middle' ? r.w / 2 : al === 'end' ? r.w : 0;
     let lines = r.lines;
+    // the displayed characters (case applied per range: a case mapping can change the length, ß → SS) and, per displayed
+    // UTF-16 unit, the source index the ranges refer to
+    const runs = r.s.runs?.length && !opts.hideText ? r.s.runs : undefined;
+    const source = r.text ?? r.row.text ?? '';
+    const shown = runs ? casedWithMap(source, f.case, runs) : undefined;
     if (!lines) {
       // fig: boxes are Figma's saved sizes; wrap within the saved width unless the text hugs its width
-      const content = withCase(r.text ?? r.row.text ?? '', f.case);
+      const content = shown?.text ?? withCase(source, f.case);
       // the saved height tells how many lines Figma laid out; the heuristic measure must not add lines to a one-line label
       const expected = Math.max(1, Math.round(r.h / lhPx));
       let limit = r.l.w === 'hug' || (expected === 1 && !f.trunc) ? Infinity : r.w + 0.5;
@@ -460,11 +592,51 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       const max = typeof f.trunc === 'number' ? f.trunc : Math.max(1, Math.floor((r.h + 0.5) / lhPx));
       if (lines.length > max) { lines = lines.slice(0, max); lines[max - 1] = lines[max - 1].replace(/\s*\S?$/, '') + '…'; }
     }
-    const free = r.h - lines.length * lhPx;
+    // leading trim to the cap height: the box runs from the first line's cap height to the last line's baseline
+    const cap = f.trim === 'cap' ? fs * CAP_HEIGHT : undefined;
+    const contentH = cap !== undefined ? (lines.length - 1) * lhPx + cap : lines.length * lhPx;
+    const free = r.h - contentH;
     const vOff = r.l.h !== 'hug' && free > 0 ? (f.va === 'center' ? free / 2 : f.va === 'bottom' ? free : 0) : 0;
-    const base = vOff + (lhPx - fs) / 2 + fs * 0.8;
-    const spans = lines.map((ln, i) => `<tspan x="${f2(x)}" y="${f2(base + i * lhPx)}">${esc(ln) || ' '}</tspan>`).join('');
+    const base = cap !== undefined ? vOff + cap : vOff + (lhPx - fs) / 2 + fs * 0.8;
+    if (cap !== undefined) notes.add('Text box trimmed to cap height: cap height approximated as 0.7 × font size');
+    // where each laid-out line starts in the displayed characters
+    const starts: number[] = [];
+    if (shown) { let cur = 0; for (const ln of lines) { const t = ln.replace(/…$/, ''); const at = shown.text.indexOf(t, cur); starts.push(at < 0 ? -1 : at); if (at >= 0) cur = at + t.length; } }
+    const runSpans = (ln: string, li: number): string => {
+      const st = starts[li];
+      if (!runs || !shown || st === undefined || st < 0) return esc(ln) || ' ';
+      const runAt = (ci: number) => runs.findIndex((x) => ci >= x.i && ci < x.i + x.n);
+      const body = ln.replace(/…$/, '').length;
+      let outS = '', seg = '', cur = -2;
+      const flushSeg = () => { if (seg) outS += cur >= 0 ? `<tspan${runAttrs(runs[cur], f, weight, col)}>${esc(seg)}</tspan>` : esc(seg); seg = ''; };
+      for (let k = 0; k < ln.length; k++) {
+        // the ellipsis takes the style of the last character it follows
+        const ri = runAt(shown.src[st + Math.min(k, Math.max(0, body - 1))] ?? -1);
+        if (ri !== cur) { flushSeg(); cur = ri; }
+        seg += ln[k];
+      }
+      flushSeg();
+      return outS || ' ';
+    };
+    const spans = lines.map((ln, i) => `<tspan x="${f2(x)}" y="${f2(base + i * lhPx)}">${runSpans(ln, i)}</tspan>`).join('');
     return `<text font-family="${esc(fam)}, 'Open Sans'" font-size="${fs}" font-weight="${weight}"${f.st === 'italic' ? ' font-style="italic"' : ''} fill="${col.c}"${col.o < 1 ? ` fill-opacity="${f2(col.o)}"` : ''} text-anchor="${al}"${f.ls ? ` letter-spacing="${f2(Number(f.ls))}"` : ''}${f.deco ? ` text-decoration="${f.deco}"` : ''} xml:space="preserve">${spans}</text>`;
+  }
+
+  /** attributes of a text range's tspan: only what differs from the text element */
+  function runAttrs(run: TextRun, base: NonNullable<Styles['font']>, weight: number | string, col: { c: string; o: number }): string {
+    const a: string[] = [];
+    const rf = run.font ?? {};
+    if (rf.f && rf.f !== base.f) { fonts.add(String(rf.f)); a.push(`font-family="${esc(String(rf.f))}, 'Open Sans'"`); }
+    if (typeof rf.s === 'number' && rf.s !== base.s) a.push(`font-size="${f2(rf.s)}"`);
+    if (rf.w != null) { const w = typeof rf.w === 'number' ? rf.w : /^\d+$/.test(String(rf.w)) ? Number(rf.w) : 400; if (w !== weight) a.push(`font-weight="${w}"`); }
+    if ('st' in rf && (rf.st === 'italic') !== (base.st === 'italic')) a.push(`font-style="${rf.st === 'italic' ? 'italic' : 'normal'}"`);
+    if ('deco' in rf && (rf.deco ?? null) !== (base.deco ?? null)) a.push(`text-decoration="${rf.deco ?? 'none'}"`);
+    if (typeof rf.ls === 'number' && rf.ls !== base.ls) a.push(`letter-spacing="${f2(rf.ls)}"`);
+    const p = run.fill?.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
+    const c = p ? colorOf(p) : undefined;
+    if (c && (c.c !== col.c || c.o !== col.o)) a.push(`fill="${c.c}"${c.o < 1 ? ` fill-opacity="${f2(c.o)}"` : ''}`);
+    else if (run.fill && !run.fill.length) a.push('fill="none"');
+    return a.length ? ' ' + a.join(' ') : '';
   }
 
   function emit(r: R, depth: number): void {
@@ -486,6 +658,8 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     else if (r.x || r.y) tf.push(`translate(${f2(r.x)} ${f2(r.y)})`);
     if (tf.length) attrs.push(`transform="${tf.join(' ')}"`);
     if (r.s.op != null) attrs.push(`opacity="${r.s.op}"`);
+    const lb = blendAttr(r.s.blend);
+    if (lb) attrs.push(lb.trim());
     const fx = r.s.fx ?? [];
     if (fx.length) {
       const fid = `f${++uid}`;
@@ -501,11 +675,15 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     }
     out.push(`<g data-id="${esc(r.row.id)}"${attrs.length ? ' ' + attrs.join(' ') : ''}>`);
     let clip = '';
-    if (r.s.clip && r.kids.length) {
+    // resvg drops clip-path layers inside a mask when their content reaches far outside the canvas: there the frame's content
+    // becomes a pattern that fills the frame's shape (a pattern tile clips like the frame does)
+    const patternClip = !!(r.s.clip && r.kids.length && maskDepth > 0 && w > 0 && h > 0);
+    if (r.s.clip && r.kids.length && !patternClip) {
       const cid = `k${++uid}`;
       defs.push(`<clipPath id="${cid}">${shape(r, w, h, '')}</clipPath>`);
       clip = cid;
     }
+    let own = '';
     switch (t) {
       case 'text': out.push(textSvg(r)); break;
       case 'path': case 'boolean': case 'polygon': case 'ellipse': {
@@ -514,11 +692,19 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
           const parts = parseGeometry(data);
           const vb = r.raw.viewBox as number[] | undefined;
           // saved outlines of an instance occurrence are already at its size; the component's own outline is in its own box
-          const b = r.geom ? { x: 0, y: 0, w, h } : vb ? { x: vb[0], y: vb[1], w: vb[2], h: vb[3] } : pathBounds(parts.map((p) => p.d).join(''));
+          const b = r.geom ? { x: 0, y: 0, w: r.geomBox?.[0] ?? w, h: r.geomBox?.[1] ?? h } : vb ? { x: vb[0], y: vb[1], w: vb[2], h: vb[3] } : pathBounds(parts.map((p) => p.d).join(''));
           const sx = b.w ? w / b.w : 1, sy = b.h ? h / b.h : 1;
           const sp = r.s.stroke?.paints.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
           const scol = sp ? colorOf(sp) : undefined;
-          const stroke = scol ? ` stroke="${scol.c}" stroke-width="${typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1}"${scol.o < 1 ? ` stroke-opacity="${f2(scol.o)}"` : ''}${r.s.stroke?.dash?.length ? ` stroke-dasharray="${r.s.stroke.dash.join(' ')}"` : ''} vector-effect="non-scaling-stroke"` : '';
+          let stroke = scol ? ` stroke="${scol.c}" stroke-width="${typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1}"${scol.o < 1 ? ` stroke-opacity="${f2(scol.o)}"` : ''}${r.s.stroke?.dash?.length ? ` stroke-dasharray="${r.s.stroke.dash.join(' ')}"` : ''} vector-effect="non-scaling-stroke"` : '';
+          // outline icon with a heavier stroke weight than its saved outline: widen the outline by stroking it in its own colour
+          if (!stroke && r.raw.geometryFrom === 'stroke' && typeof r.s.ow === 'number' && typeof r.raw.outlineW === 'number' && !r.geom) {
+            const drawn = r.raw.outlineW * Math.min(sx, sy);
+            const fp = r.s.fill?.find((x) => x.k === 'solid') as (Paint & { k: 'solid' }) | undefined;
+            const fc = fp ? colorOf(fp) : undefined;
+            if (fc && r.s.ow > drawn + 0.01) stroke = ` stroke="${fc.c}" stroke-width="${f2(r.s.ow - drawn)}"${fc.o < 1 ? ` stroke-opacity="${f2(fc.o)}"` : ''} stroke-linejoin="round" vector-effect="non-scaling-stroke"`;
+            else if (r.s.ow < drawn - 0.01) notes.add('Outline icon with a thinner stroke override drawn at the component\'s stroke weight');
+          }
           const regions = r.raw.regions as Record<string, Paint[]> | undefined;
           const tfm = sx === 1 && sy === 1 && !b.x && !b.y ? '' : ` transform="scale(${f2(sx)} ${f2(sy)}) translate(${f2(-b.x)} ${f2(-b.y)})"`;
           for (const part of parts) {
@@ -548,33 +734,75 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       }
       case 'instance':
         if (!r.kids.length) notes.add('Instance without resolvable component (library not in the file): drawn as a plain shape');
-        out.push(paintsSvg(r, w, h), strokeSvg(r, w, h));
+        own = paintsSvg(r, w, h) + strokeSvg(r, w, h);
         break;
       default:
-        out.push(paintsSvg(r, w, h), strokeSvg(r, w, h));
+        own = paintsSvg(r, w, h) + strokeSvg(r, w, h);
     }
+    // a clip group is an isolated layer in SVG: children that blend with their frame need the frame's paints inside it
+    const blendKids = !!clip && blendsInto(r.kids);
+    if (!blendKids) out.push(own);
     if (r.kids.length && !(t === 'boolean' && geoms.has(r.row.id + (r.geom ?? '')))) {
       if (clip) out.push(`<g clip-path="url(#${clip})">`);
+      if (blendKids) out.push(own);
+      const kidsAt = out.length;
       // a visible mask is not drawn: it masks the siblings after it, up to the next mask or the end of the parent
       let masked = false;
-      for (const k of r.kids) {
+      // stackReverseZIndex: the first child is painted last (on top)
+      for (const k of r.raw.revZ ? [...r.kids].reverse() : r.kids) {
         if (k.raw.mask) {
           if (masked) out.push('</g>');
           const mid = `m${++uid}`;
           const at = out.length;
-          emit(k, depth + 1);
+          // OUTLINE ("vector") masks use the shape only: its paints count as opaque. LUMINANCE masks use luminance × alpha (SVG's
+          // luminance mask), ALPHA masks the alpha channel.
+          maskDepth++;
+          try { emit(k.raw.maskType === 'OUTLINE' ? opaque(k) : k, depth + 1); } finally { maskDepth--; }
           const body = out.splice(at).join('');
           defs.push(`<mask id="${mid}" maskUnits="userSpaceOnUse" x="-100000" y="-100000" width="200000" height="200000"${k.raw.maskType === 'LUMINANCE' ? '' : ' mask-type="alpha" style="mask-type:alpha"'}>${body}</mask>`);
           out.push(`<g mask="url(#${mid})">`);
+          if (!masked) maskDepth++;
           masked = true;
           continue;
         }
         emit(k, depth + 1);
       }
-      if (masked) out.push('</g>');
+      if (masked) { out.push('</g>'); maskDepth--; }
       if (clip) out.push('</g>');
+      if (patternClip) {
+        const pid = `p${++uid}`;
+        defs.push(`<pattern id="${pid}" patternUnits="userSpaceOnUse" x="0" y="0" width="${f2(w)}" height="${f2(h)}">${out.splice(kidsAt).join('')}</pattern>`);
+        out.push(shape(r, w, h, `fill="url(#${pid})"`));
+      }
     }
     out.push('</g>');
+  }
+
+  /**
+   * Whether a layer below blends with what is behind it, looking through containers that do not start an isolated layer in SVG
+   * (no clip, opacity, effects, own blend mode or masks among their children).
+   */
+  function blendsInto(kids: R[]): boolean {
+    for (const k of kids) {
+      if (k.s.blend || k.s.fill?.some((p) => p.bm)) return true;
+      const isolates = (k.s.clip && k.kids.length) || k.s.op != null || k.s.fx?.length || k.kids.some((x) => x.raw.mask);
+      if (!isolates && k.kids.length && blendsInto(k.kids)) return true;
+    }
+    return false;
+  }
+
+  /** A layer drawn as an opaque silhouette (outline masks): every fill becomes opaque black, strokes and effects go. */
+  function opaque(r: R): R {
+    const black: Paint[] = [{ k: 'solid', c: '#000000' }];
+    const s: Styles = { ...r.s };
+    // only what is painted counts: a layer without fills (unfilled frame, icon instance) contributes its content, not its box
+    if (s.fill?.length) s.fill = black; else delete s.fill;
+    if (s.runs) s.runs = s.runs.map((x) => (x.fill ? { ...x, fill: x.fill.length ? black : x.fill } : x));
+    delete s.stroke; delete s.fx; delete s.blend;
+    const raw = { ...r.raw };
+    // per-region paints: a region with paints becomes opaque, an unfilled region stays unfilled
+    if (raw.regions) raw.regions = Object.fromEntries(Object.entries(raw.regions as Record<string, Paint[]>).map(([k, v]) => [k, v.length ? black : []]));
+    return { ...r, s, raw, kids: r.kids.map(opaque) };
   }
 
   // a vector exported on its own keeps the parts of its outline that lie outside its box (stroke outlines, overshoot)

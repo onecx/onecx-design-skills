@@ -31,10 +31,13 @@ queried directly (always go through `design-query`).
 `wrap` · `abs` (absolutely positioned) · `w`/`h` = `"fill"` | `"hug"` | number (sizing rule of the node inside its parent).
 
 ## `styles` (JSON)
-- `fill`: `[{k:"solid", c:"#rrggbb[aa]", v:"<token>"}, {k:"grad", t (linear|radial|angular|diamond), stops, a, p (handles, node-normalized: linear [x1,y1,x2,y2], others [cx,cy,ax,ay,bx,by])}, {k:"img", asset:"<hash>", mode (cover|contain|crop|tile|stretch), tf (crop transform), o (opacity)}]`
+- `fill`: `[{k:"solid", c:"#rrggbb[aa]", v:"<token>"}, {k:"grad", t (linear|radial|angular|diamond), stops, a, p (handles, node-normalized: linear [x1,y1,x2,y2], others [cx,cy,ax,ay,bx,by])}, {k:"img", asset:"<hash>", mode (cover|contain|crop|tile|stretch), tf (crop transform), o (opacity)}]`; every paint may carry `bm` (blend mode in CSS spelling, e.g. `multiply`; Figma-only `linear-burn`/`linear-dodge`)
+- `blend`: layer blend mode (absent = normal / pass-through) · `link`: hyperlink of the whole text (URL or `#<node-id>`)
+- `runs`: text ranges with their own style `[{i, n (UTF-16 start/length), font (only the fields the range sets; null = default), fill, link, sty}]` (fig `characterStyleIDs` + `styleOverrideTable`, range style references resolved)
+- `ow`: effective stroke weight of an outline icon (`raw.geometryFrom = "stroke"`) after an instance override or scale · `ifill`: the layer's own paints where a fill style replaced different ones, stored only on layers that some instance detaches from the style
 - `stroke`: `{paints, w (number or [t,r,b,l]), align, dash}` · `r` radius (number or [tl,tr,br,bl]; never on vectors) · `op` · `clip`
 - `rot` (degrees, counter-clockwise about the top-left origin) · `flip` x|y (mirrored before rotating; the full matrix is in `raw.m`)
-- `fx`: shadows/blur (`blur` = Figma radius) · `font`: `{f, s, w, lh (factor; absent = normal), ls, al, st, deco, case, va (center|bottom), trunc (true or max lines), nlh (font's natural line height factor)}`
+- `fx`: shadows/blur (`blur` = Figma radius) · `font`: `{f, s, w, lh (factor; absent = normal), ls, al, st, deco, case, va (center|bottom), trunc (true or max lines), nlh (font's natural line height factor), trim ("cap" = leading trim to cap height)}`
 - `vars`: bound variables by field (`gap`, `pad-top|right|bottom|left`, `radius`, `r-tl|tr|br|bl`, `width`, `height`, `min-/max-width|height`, `font-family`, `font-size`, `font-style`, `line-height`, `letter-spacing`, `opacity`, `stroke-weight`, `border-*`, `text`, …) → variable id
 - `sty`: names of the shared styles the values come from (`text`, `fill`, `stroke`, `effect`)
 - `v` refers to `variables.id`/`guid`; the name is in `variables.name`, the CSS variable is `--<name-in-kebab-case>`.
@@ -45,8 +48,10 @@ queried directly (always go through `design-query`).
 - **.fig** (ZIP with `canvas.fig`, `meta.json`, `images/`): Kiwi schema + zstd/deflate. Positions are computed (transform relative to the
   parent). Instances have no children, their content comes from `component_ref` plus `raw.overrides`/`raw.props`.
   Pages = canvases; "Internal Only Canvas" (`pages.internal=1`) holds variables/library parts and shared styles.
-  Groups are FRAME + `resizeToFit` (type `group`). `raw`: `mask`, `maskType`, `hConstraint`/`vConstraint` (non-MIN constraints incl. SCALE),
+  Groups are FRAME + `resizeToFit` (type `group`). `raw`: `mask`, `maskType` (OUTLINE | LUMINANCE; absent = ALPHA), `usf` (instance uniform scale factor),
+  `revZ` (stackReverseZIndex: first child painted on top), `hConstraint`/`vConstraint` (non-MIN constraints incl. SCALE),
   `m` (2×2 matrix of mirrored/skewed nodes), `list` (list marker per line), `regions` (paints per vector region), `arc`, `polygonCount`,
   `geometryFrom: "stroke"` + `outlineW` (stroke-only vector drawn as its filled outline). Override records (`raw.overrides[]`) carry `p` (path),
   `t`, `hidden`/`show`, `swap`, `pa`, `st` (styles), `sp` (stroke width/align/dash/border sides), `rc` (corner fields), `lo` (auto-layout
-  and text-resize fields in Figma's names), `sz`, `vm`, `vb` (variable bindings, null = cleared).
+  and text-resize fields in Figma's names), `sz`, `vm`, `vb` (variable bindings, null = cleared); `st.runs` = the ranges of new characters (`[]` = none).
+  Display-P3 documents (`meta.color_profile = DISPLAY_P3`) store all colours converted to sRGB.

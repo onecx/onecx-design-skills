@@ -13,7 +13,9 @@
 //   - saved derived data (effective size/position per path) is a cache applied last
 //   - slot content (SLOT_CONTENT_ID property): the slot frame shows the assigned content frame's children, without bindings
 //   - text bound to a variable shows the variable's value; an owner's bare binding entry clears it (literal shows)
-// Simplifications: no resize constraints, no variable-binding scales, variables resolve in their default mode.
+//   - uniformScaleFactor (instance "scale"): the expanded content is scaled after the claims and before the saved derived data
+//   - text bound to a STRING variable resolves under the nearest explicit mode of its collection
+// Simplifications: no resize constraints, no variable-binding scales.
 import type { DatabaseSync } from './sqlite.js';
 import type { Layout, Styles } from './model.js';
 import { mergeStyles, ovsOf, type Ov } from './overrides.js';
@@ -49,6 +51,8 @@ export interface VNode {
   isInstance: boolean;
   /** geometry table key of a saved (resized) vector shape for this occurrence */
   geomKey?: string;
+  /** size the saved shape (`geomKey`) was stored at, when an enclosing instance scaled the node afterwards */
+  geomBox?: [number, number];
 }
 
 export class TooBig extends Error {}
@@ -78,10 +82,10 @@ export class Evaluator {
     this.qRow = db.prepare(`SELECT ${COLS} FROM nodes WHERE id=?`);
     this.qKids = db.prepare(`SELECT ${COLS} FROM nodes WHERE parent_id=? ORDER BY ord`);
     this.qDefs = db.prepare('SELECT id, initial, parent FROM propdefs WHERE owner=?');
-    this.qDef = db.prepare('SELECT initial, parent FROM propdefs WHERE id=? LIMIT 1');
+    this.qDef = db.prepare('SELECT owner, initial, parent FROM propdefs WHERE id=?');
     this.qDerived = db.prepare('SELECT p,w,h,x,y,geom,ns,sg FROM derived WHERE inst=?');
-    const qVar = db.prepare('SELECT vals FROM variables WHERE id=? OR guid=? LIMIT 1');
-    this.vars = new VarLookup((id) => (qVar.get(id, id) as { vals: string } | undefined)?.vals);
+    const qVar = db.prepare('SELECT vals, collection FROM variables WHERE id=? OR guid=? LIMIT 1');
+    this.vars = new VarLookup((id) => qVar.get(id, id) as { vals: string; collection: string } | undefined);
     for (const m of db.prepare('SELECT set_id,set_key,set_name,mode_id,mode_name FROM varmodes').all() as { set_id: string; set_key: string | null; set_name: string; mode_id: string; mode_name: string }[]) {
       this.modeNames.set(m.mode_id, m.mode_name);
       this.setNames.set(m.set_id, m.set_name);
@@ -104,12 +108,16 @@ export class Evaluator {
   }
 
   // ---- component property defaults (propdefs table), definitions inherit through parentPropDefId ----
-  private resolveInitial(initialJson: string | null, parent: string | null, depth = 0): Val {
+  // Definition ids are not unique in a document: the parent definition is the one declared by the nearest ancestor of the owner.
+  private resolveInitial(initialJson: string | null, parent: string | null, owner: string, depth = 0): Val {
     const v = initialJson == null ? null : JSON.parse(initialJson);
     if (v !== null && v !== undefined) return v;
     if (parent && depth < 8) {
-      const p = this.qDef.get(parent) as { initial: string | null; parent: string | null } | undefined;
-      if (p) return this.resolveInitial(p.initial, p.parent, depth + 1);
+      const cands = this.qDef.all(parent) as { owner: string; initial: string | null; parent: string | null }[];
+      let p = cands.length === 1 ? cands[0] : undefined;
+      for (let o: NodeRec | undefined = this.node(owner), i = 0; !p && o && i < 40; o = o.parent_id ? this.node(o.parent_id) : undefined, i++) p = cands.find((c) => c.owner === o!.id);
+      p ??= cands[0];
+      if (p) return this.resolveInitial(p.initial, p.parent, p.owner, depth + 1);
     }
     return null;
   }
@@ -123,7 +131,7 @@ export class Evaluator {
     if (parent && this.raw(parent)?.isComponentSet) owners.unshift(parent.id);
     for (const o of owners) {
       for (const d of this.qDefs.all(o) as { id: string; initial: string | null; parent: string | null }[]) {
-        const v = this.resolveInitial(d.initial, d.parent);
+        const v = this.resolveInitial(d.initial, d.parent, o);
         if (v !== null && v !== undefined) out.set(d.id, { v, origin: 'default', used: false });
       }
     }
@@ -176,7 +184,7 @@ export class Evaluator {
       }
     };
     take('visible', raw.refs.V, (v) => { if (typeof v !== 'boolean') return false; out.visible = v ? 1 : 0; return true; });
-    take('text', raw.refs.T, (v) => { if (typeof v !== 'string') return false; out.text = v; return true; });
+    take('text', raw.refs.T, (v) => { if (typeof v !== 'string') return false; if (v !== out.text) out.styles = withoutRuns(out.styles); out.text = v; return true; });
     take('sym', raw.refs.S, (v) => { const s = (v as { sym?: string } | null)?.sym; if (!s) return false; out.component_ref = s; return true; });
     return { row: out, assigned };
   }
@@ -200,7 +208,19 @@ export class Evaluator {
     // explicit variable modes of the frames above the root apply to it as well (nearest wins, outer first)
     const inherited = this.ancestorModes(root);
     if (inherited.length) tree.modes = [...inherited, ...(tree.modes ?? [])];
+    this.modeTexts(tree, []);
     return tree;
+  }
+
+  /** Text bound to a STRING variable shows its value under the nearest explicit mode of the variable's collection. */
+  private modeTexts(v: VNode, inherited: string[]): void {
+    const modes = v.modes ? [...inherited, ...v.modes] : inherited;
+    if (modes.length && v.row.type === 'text' && v.row.styles?.includes('"text"')) {
+      const ref = safeJson<Styles>(v.row.styles)?.vars?.text;
+      const t = ref ? this.vars.string(ref, modes) : undefined;
+      if (t !== undefined && t !== v.row.text) v.row = { ...v.row, text: t, styles: withoutRuns(v.row.styles) };
+    }
+    for (const k of v.kids) this.modeTexts(k, modes);
   }
 
   private ancestorModes(root: NodeRec): string[] {
@@ -321,10 +341,29 @@ export class Evaluator {
       const unplaced = [...own].filter((k) => { const b = scope.get(k); return b && b.origin === 'assignment' && !b.used && typeof b.v === 'string' && b.v.trim(); }).map((k) => String(scope.get(k)!.v));
       if (unplaced.length) node.unplaced = unplaced;
     }
-    // property claims of this owner, then the saved layout cache; outer owners run after inner ones by construction
+    // property claims of this owner, then the instance's uniform scale, then the saved layout cache; outer owners run after inner ones
     for (const c of claims) {
       const hit = this.resolveWithParent(node, c.path);
       if (hit) this.applyClaim(hit.node, c.ov, rank, hit.parent);
+    }
+    const usf = raw?.usf;
+    if (typeof usf === 'number' && usf > 0 && usf !== 1) {
+      // everything is scaled, then the instance record's own (placed-space) values are restored
+      const own = { w: src.w, h: src.h, l: safeJson<Layout>(src.layout), s: safeJson<Styles>(src.styles) };
+      scaleTree(node, usf);
+      const r = { ...node.row, x: src.x, y: src.y, w: own.w, h: own.h };
+      if (own.l && r.layout) {
+        const l = safeJson<Layout>(r.layout) ?? {};
+        for (const k of ['gap', 'pad', 'w', 'h'] as const) if (own.l[k] !== undefined) (l as Record<string, unknown>)[k] = own.l[k];
+        r.layout = JSON.stringify(l);
+      }
+      if (own.s && r.styles) {
+        const st = safeJson<Styles>(r.styles) ?? {};
+        for (const k of ['r', 'fx', 'font', 'ow'] as const) if (own.s[k] !== undefined) (st as Record<string, unknown>)[k] = own.s[k];
+        if (own.s.stroke && st.stroke) st.stroke = { ...st.stroke, w: own.s.stroke.w, dash: own.s.stroke.dash };
+        r.styles = JSON.stringify(st);
+      }
+      node.row = r;
     }
     for (const d of this.derivedOf(src.id)) {
       const target = this.resolve(node, d.p);
@@ -337,8 +376,11 @@ export class Evaluator {
       target.row = r;
       const fromStroke = this.raw(target.row)?.geometryFrom === 'stroke';
       // saved outlines of this occurrence, already at its size; a stroke-only vector draws its saved stroke outline
-      if (d.geom) target.geomKey = d.geom;
-      else if (fromStroke && d.sg) target.geomKey = d.sg;
+      if (d.geom) { target.geomKey = d.geom; target.geomBox = undefined; }
+      else if (fromStroke && d.sg) {
+        target.geomKey = d.sg; target.geomBox = undefined;
+        // (the saved outline already has the effective stroke weight `ow`; the renderer only widens outlines without a saved one)
+      }
       if (d.ns && fromStroke && r.styles?.includes('"fill"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.fill; target.row = { ...r, styles: JSON.stringify(st) }; }
       else if (d.ns && r.styles?.includes('"stroke"')) { const st = safeJson<Styles>(r.styles) ?? {}; delete st.stroke; target.row = { ...r, styles: JSON.stringify(st) }; }
     }
@@ -387,11 +429,21 @@ export class Evaluator {
     const ranked = (field: string): boolean => { const r = t.assigned.get(field); return r === undefined || r >= ownerRank; };
     const row = { ...t.row };
     const raw = this.raw(t.row);
-    if (o.t !== undefined && ranked('text')) row.text = o.t;
+    const textApplies = o.t !== undefined && ranked('text');
+    // new characters: the component's ranges indexed the old ones (the override brings its own ranges, if any, in st.runs)
+    if (textApplies && o.t !== row.text) row.styles = withoutRuns(row.styles);
+    if (textApplies) row.text = o.t!;
     if (o.hidden) { row.visible = 0; t.hidden = true; }
     if (o.show && ranked('visible')) { row.visible = 1; t.hidden = false; }
     if (o.st || o.sp || o.rc || o.vb) {
       let ov: Styles = o.st ?? {};
+      // ranges belong to the override's characters: without them (outranked by a property value) they do not apply
+      if (ov.runs && !textApplies) { const { runs: _r, ...rest } = ov; void _r; ov = rest; }
+      // an override that detaches the fill style and brings no paints shows the layer's own paints (the style's values were a link)
+      if (ov.sty?.fill === '' && !ov.fill) {
+        const own = safeJson<Styles>(row.styles)?.ifill;
+        if (own) ov = { ...ov, fill: own };
+      }
       // a stroke-only vector draws its stroke outline as a fill: a stroke colour override recolours that fill
       if (raw?.geometryFrom === 'stroke' && ov.stroke) {
         const { stroke, ...rest } = ov;
@@ -400,6 +452,10 @@ export class Evaluator {
       }
       const st = mergeStyles(safeJson<Styles>(row.styles) ?? {}, ov);
       if (o.sp && st.stroke && raw?.geometryFrom !== 'stroke') st.stroke = strokeWith(st.stroke, o.sp);
+      // an outline icon whose stroke weight changes: its saved outline has the component's weight (the renderer widens it)
+      if (o.sp && raw?.geometryFrom === 'stroke' && typeof o.sp.w === 'number') {
+        if (Math.abs(o.sp.w - Number(raw.outlineW ?? o.sp.w)) > 1e-6) st.ow = o.sp.w; else delete st.ow;
+      }
       if (o.rc && !['path', 'boolean', 'polygon'].includes(row.type)) {
         const r = radiusWith(st.r, o.rc);
         if (r === undefined) delete st.r; else st.r = r;
@@ -426,10 +482,66 @@ export class Evaluator {
     if (row.type === 'text') {
       const v = safeJson<Styles>(row.styles)?.vars?.text;
       const s = v ? this.vars.string(v) : undefined;
-      if (s !== undefined) row.text = s;
+      if (s !== undefined) { if (s !== row.text) row.styles = withoutRuns(row.styles); row.text = s; }
     }
     t.row = row;
   }
+}
+
+/** Styles JSON without text ranges (the characters they indexed were replaced). */
+function withoutRuns(styles: string | null): string | null {
+  if (!styles || !styles.includes('"runs"')) return styles;
+  const st = safeJson<Styles>(styles) ?? {};
+  delete st.runs;
+  return Object.keys(st).length ? JSON.stringify(st) : null;
+}
+
+const rs = (v: number, f: number) => Math.round(v * f * 1000) / 1000;
+/** Lengths of a styles record scaled by `f` (stroke, radius, dash, effects, font size/tracking, ranges). */
+export function scaleStyles(st: Styles, f: number): Styles {
+  const o: Styles = { ...st };
+  if (o.stroke) {
+    const w = o.stroke.w;
+    o.stroke = { ...o.stroke, w: Array.isArray(w) ? w.map((x) => rs(x, f)) : typeof w === 'number' ? rs(w, f) : w, dash: o.stroke.dash?.map((x) => rs(x, f)) };
+    if (!o.stroke.dash) delete o.stroke.dash;
+  }
+  if (o.r != null) o.r = Array.isArray(o.r) ? o.r.map((x) => rs(x, f)) : rs(o.r, f);
+  if (o.fx) o.fx = o.fx.map((e) => ({ ...e, x: e.x != null ? rs(e.x, f) : e.x, y: e.y != null ? rs(e.y, f) : e.y, blur: e.blur != null ? rs(e.blur, f) : e.blur, spread: e.spread != null ? rs(e.spread, f) : e.spread }));
+  const font = (x: Partial<NonNullable<Styles['font']>> | undefined) => {
+    if (!x) return x;
+    const y = { ...x };
+    if (typeof y.s === 'number') y.s = rs(y.s, f);
+    if (typeof y.ls === 'number') y.ls = rs(y.ls, f);
+    if (typeof y.lh === 'string' && y.lh.endsWith('px')) y.lh = `${rs(parseFloat(y.lh), f)}px`;
+    return y;
+  };
+  if (o.font) o.font = font(o.font) as Styles['font'];
+  if (o.runs) o.runs = o.runs.map((r) => (r.font ? { ...r, font: font(r.font) } : r));
+  if (typeof o.ow === 'number') o.ow = rs(o.ow, f);
+  return o;
+}
+
+/** Scales an occurrence and its content (instance uniformScaleFactor): positions, sizes, layout distances and style lengths. */
+function scaleTree(v: VNode, f: number): void {
+  const r = { ...v.row };
+  if (v.geomKey && !v.geomBox && r.w != null && r.h != null) v.geomBox = [r.w, r.h];
+  for (const k of ['x', 'y', 'w', 'h'] as const) if (r[k] != null) r[k] = Math.round((r[k] as number) * f * 1000) / 1000;
+  if (r.styles || r.raw?.includes('"geometryFrom":"stroke"')) {
+    const st = safeJson<Styles>(r.styles) ?? {};
+    // an outline icon's stroke weight scales with it (raw.outlineW is the component's weight)
+    if (st.ow === undefined && r.raw?.includes('"geometryFrom":"stroke"')) { const w = safeJson<{ outlineW?: number }>(r.raw)?.outlineW; if (typeof w === 'number') st.ow = w; }
+    r.styles = JSON.stringify(scaleStyles(st, f));
+  }
+  if (r.layout) {
+    const l = safeJson<Layout>(r.layout) ?? {};
+    if (typeof l.gap === 'number') l.gap = rs(l.gap, f);
+    if (l.pad) l.pad = l.pad.map((x) => rs(x, f));
+    if (typeof l.w === 'number') l.w = rs(l.w, f);
+    if (typeof l.h === 'number') l.h = rs(l.h, f);
+    r.layout = JSON.stringify(l);
+  }
+  v.row = r;
+  for (const k of v.kids) scaleTree(k, f);
 }
 
 interface DerivedRec { p: string[]; ps: string; w: number | null; h: number | null; x: number | null; y: number | null; geom: string | null; ns: number | null; sg: string | null }

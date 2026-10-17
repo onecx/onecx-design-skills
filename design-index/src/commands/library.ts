@@ -3,6 +3,8 @@ import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
 import { Out, q, safeJson } from '../output.js';
 import { cssName, isAlias, loadTokens, modesOf, resolveValue, tokenNames, type TokenRec } from '../tokens.js';
+import { getMeta } from '../db.js';
+import { P3_NOTE } from './spec.js';
 
 interface CompRec { id: string; name: string; page: number; description: string; set_id: string | null; set_name: string | null; variant: string | null; props: string | null; instances: number }
 
@@ -118,6 +120,7 @@ export function buildTokens(db: DatabaseSync, format: 'css' | 'json' | 'ts', der
 export function tokensCommand(db: DatabaseSync, out: Out, o: { format: string; out?: string; derive?: boolean }): void {
   const format = (['css', 'json', 'ts'].includes(o.format) ? o.format : 'css') as 'css' | 'json' | 'ts';
   const r = buildTokens(db, format, !!o.derive);
+  if (getMeta(db, 'color_profile') === 'DISPLAY_P3') out.hint(`Display-P3 document: ${P3_NOTE}.`);
   if (!r.count) {
     out.head('# 0 tokens: the file defines no variables/styles.');
     const u = db.prepare("SELECT kind, COUNT(*) c FROM usage GROUP BY kind").all() as { kind: string; c: number }[];

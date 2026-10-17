@@ -5,12 +5,31 @@ export type NodeType =
   | 'icon' | 'instance' | 'component' | 'boolean' | 'section' | 'note' | 'other';
 
 /** A paint in normalized form. `v` is a token name when the paint is bound to a variable. */
+/** `bm` = paint blend mode in CSS spelling (multiply, screen, …; absent = normal) */
 export type Paint =
-  | { k: 'solid'; c?: string; v?: string; o?: number }
+  | { k: 'solid'; c?: string; v?: string; o?: number; bm?: string }
   /** `a` = legacy angle; `p` = handles in node-normalized space: linear [x1,y1,x2,y2]; radial/angular/diamond [cx,cy,ax,ay,bx,by] (centre, end of axis 1, end of axis 2) */
-  | { k: 'grad'; t: string; stops: [string, number][]; v?: string; a?: number; p?: number[] }
+  | { k: 'grad'; t: string; stops: [string, number][]; v?: string; a?: number; p?: number[]; bm?: string }
   /** `tf` = crop transform (node unit square -> image unit square, [m00,m01,m02,m10,m11,m12]); `o` = paint opacity */
-  | { k: 'img'; asset?: string; mode?: string; url?: string; tf?: number[]; o?: number };
+  | { k: 'img'; asset?: string; mode?: string; url?: string; tf?: number[]; o?: number; bm?: string };
+
+/**
+ * A character range of a text with its own style (fig: characterStyleIDs + styleOverrideTable). `i`/`n` = start and length in
+ * UTF-16 code units of the text; only fields the range sets are present (absent = the text's own value).
+ */
+export interface TextRun {
+  i: number; n: number;
+  font?: Partial<NonNullable<Styles['font']>>;
+  fill?: Paint[];
+  /** hyperlink: an URL, or `#<node-id>` for a link to a node of the file */
+  link?: string;
+  /** names of the shared styles the range takes its values from (text, fill) */
+  sty?: Record<string, string>;
+  /** unresolved style references (removed once the style records are known) */
+  tsid?: string; fsid?: string;
+  /** the range sets its font fields over its text style (Figma isOverrideOverTextStyle) */
+  ovr?: boolean;
+}
 
 export interface Styles {
   fill?: Paint[];
@@ -29,7 +48,19 @@ export interface Styles {
     trunc?: boolean | number;
     /** the font's natural line height as a multiplier of the font size (fig: derivedTextData), used to draw "normal" */
     nlh?: number;
+    /** text box trim (Figma leadingTrim): cap = from cap height to baseline */
+    trim?: string;
   };
+  /** ranges with their own style (mixed text styles) */
+  runs?: TextRun[];
+  /** hyperlink of the whole text (URL or `#<node-id>`) */
+  link?: string;
+  /** layer blend mode in CSS spelling (multiply, screen, …; Figma names linear-burn/linear-dodge kept); absent = normal/pass-through */
+  blend?: string;
+  /** outline icon (raw.geometryFrom = stroke) whose stroke weight an instance changed: the new weight */
+  ow?: number;
+  /** fig: the node's own paints where a fill style replaced different ones (shown when an instance detaches the style) */
+  ifill?: Paint[];
   clip?: boolean;
   /** rotation in degrees, counter-clockwise, about the node's top-left origin (@x,y) */
   rot?: number;

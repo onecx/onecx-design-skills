@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
-import type { Layout, Paint, Styles } from '../model.js';
+import type { Layout, Paint, Styles, TextRun } from '../model.js';
+import { getMeta } from '../db.js';
 import { Out, gradientStr, layoutStr, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
@@ -22,37 +23,48 @@ const VECTOR_TYPES = new Set(['path', 'line', 'polygon', 'ellipse', 'boolean']);
 
 interface Ctx { db: DatabaseSync; tokens: TokenIndex; assets: Map<string, { path: string; mime: string }>; includeHidden: boolean }
 
+/** Explanation printed where a Display-P3 document's colours appear (spec header, summary, tokens). */
+export const P3_NOTE = 'colours: the document is Display-P3 (Figma colour profile); every hex value is converted to sRGB and ready for CSS as is. Colours outside sRGB are clamped to its edge: ask the user before using color(display-p3 …) for them. Embedded images are exported unchanged (still P3)';
+
 function paintsSpec(c: Ctx, ps: Paint[] | undefined, modes?: string[], w?: number | null, h?: number | null): string {
   if (!ps?.length) return '';
-  return ps.map((p) => {
-    if (p.k === 'solid' && !p.v && p.c) {
-      const t = c.tokens.hexMatch(p.c);
-      return t ? `${p.c}(=$${t}?)` : p.c;
-    }
-    if (p.k === 'solid' && p.v) {
-      // under explicit variable modes (e.g. Theme) the token can have another value than in the default CSS: state it
-      let eff = '';
-      if (modes?.length) { const a = c.tokens.colorValue(p.v, modes), b = c.tokens.colorValue(p.v); if (a && a !== b) eff = `{${a}}`; }
-      return `$${c.tokens.nameFor(p.v)}${eff}`;
-    }
-    if (p.k === 'img') {
-      const a = p.asset ? c.assets.get(p.asset) : undefined;
-      return a ? `img(${a.path}${p.mode && p.mode !== 'cover' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})` : `img(missing:${p.url ?? '?'})`;
-    }
-    if (p.k === 'grad') return gradientStr(p, w, h, (col) => { const t = col.startsWith('#') ? c.tokens.hexMatch(col) : undefined; return t ? `${col}(=$${t}?)` : col; });
-    return paintStr(p);
-  }).join('+');
+  return ps.map((p) => paintSpec(c, p, modes, w, h) + (p.bm ? `|${p.bm}` : '')).join('+');
+}
+
+function paintSpec(c: Ctx, p: Paint, modes?: string[], w?: number | null, h?: number | null): string {
+  if (p.k === 'solid' && !p.v && p.c) {
+    const t = c.tokens.hexMatch(p.c);
+    return t ? `${p.c}(=$${t}?)` : p.c;
+  }
+  if (p.k === 'solid' && p.v) {
+    // under explicit variable modes (e.g. Theme) the token can have another value than in the default CSS: state it
+    let eff = '';
+    if (modes?.length) { const a = c.tokens.colorValue(p.v, modes), b = c.tokens.colorValue(p.v); if (a && a !== b) eff = `{${a}}`; }
+    return `$${c.tokens.nameFor(p.v)}${eff}`;
+  }
+  if (p.k === 'img') {
+    const a = p.asset ? c.assets.get(p.asset) : undefined;
+    return a ? `img(${a.path}${p.mode && p.mode !== 'cover' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})` : `img(missing:${p.url ?? '?'})`;
+  }
+  if (p.k === 'grad') return gradientStr(p, w, h, (col) => { const t = col.startsWith('#') ? c.tokens.hexMatch(col) : undefined; return t ? `${col}(=$${t}?)` : col; });
+  return paintStr({ ...p, bm: undefined });
+}
+
+/** `$token`, plus `{value}` when the explicit modes in effect give it another value than its default mode. */
+function tokRef(c: Ctx, ref: string, modes?: string[]): string {
+  const mv = c.tokens.modeValue(ref, modes);
+  return `$${c.tokens.nameFor(ref)}${mv !== undefined ? `{${typeof mv === 'number' ? Math.round(mv * 1000) / 1000 : String(mv)}}` : ''}`;
 }
 
 /** Keys of Styles.vars that are printed in place of the value they bind (gap, padding, radius, font) instead of separately. */
 const INLINE_VARS = new Set(['gap', 'pad-top', 'pad-right', 'pad-bottom', 'pad-left', 'radius', 'r-tl', 'r-tr', 'r-br', 'r-bl', 'font-size', 'font-family', 'line-height', 'letter-spacing', 'text']);
 
 /** Radius binding: one token for all corners or per corner (tl,tr,br,bl); unbound corners keep their number. */
-function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r']): string | undefined {
+function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r'], modes?: string[]): string | undefined {
   const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => v[k] ?? v.radius);
   if (!corners.some(Boolean)) return undefined;
   const nums = Array.isArray(r) ? r : [r ?? 0, r ?? 0, r ?? 0, r ?? 0];
-  const names = corners.map((x, i) => (x ? `$${c.tokens.nameFor(x)}` : String(nums[i] ?? 0)));
+  const names = corners.map((x, i) => (x ? tokRef(c, x, modes) : String(nums[i] ?? 0)));
   return new Set(names).size === 1 ? names[0] : names.join(',');
 }
 
@@ -62,27 +74,28 @@ function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): str
   const isText = n.type === 'text';
   const raw = safeJson<Record<string, unknown>>(n.raw);
   if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill, modes, n.w, n.h)}`);
-  if (raw?.geometryFrom === 'stroke' && typeof raw.outlineW === 'number') p.push(`(outline of a ${raw.outlineW}px stroke)`);
+  if (raw?.geometryFrom === 'stroke' && typeof raw.outlineW === 'number') p.push(`(outline of a ${s.ow ?? raw.outlineW}px stroke)`);
   if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints, modes, n.w, n.h)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}${s.stroke.dash?.length ? `/dash${s.stroke.dash.join(',')}` : ''}`);
-  const rv = s.vars && n.type !== 'path' && n.type !== 'boolean' && n.type !== 'polygon' ? radiusVar(c, s.vars, s.r) : undefined;
+  const rv = s.vars && n.type !== 'path' && n.type !== 'boolean' && n.type !== 'polygon' ? radiusVar(c, s.vars, s.r, modes) : undefined;
   if (rv) p.push(`r=${rv}`);
   else if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
   if (s.op != null) p.push(`op=${s.op}`);
+  if (s.blend) p.push(`blend=${s.blend}`);
   if (s.clip) p.push('clip');
   if (s.rot) p.push(`rot=${s.rot}`);
   if (s.flip) p.push(`flip=${s.flip}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `${e.inner ? 'inset-' : ''}shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.spread ? ',' + e.spread : ''},${e.c ?? '#000'})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
-  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=$${c.tokens.nameFor(v)}`));
+  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=${tokRef(c, v, modes)}`));
   if (s.vars?.text && isText) p.push(`text-token=$${c.tokens.nameFor(s.vars.text)}`);
   if (s.sty) p.push(`styles{${Object.entries(s.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
   return p;
 }
 
-function fontStr(c: Ctx, s: Styles | null): string {
+function fontStr(c: Ctx, s: Styles | null, modes?: string[]): string {
   const f = s?.font;
   if (!f) return '';
   const v = s?.vars ?? {};
-  const tok = (k: string) => (v[k] ? `$${c.tokens.nameFor(v[k])}` : undefined);
+  const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes) : undefined);
   const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : f.lh) : undefined);
   const ls = tok('letter-spacing') ?? (f.ls != null ? (typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : f.ls) : undefined);
   const font = 'font=' + [tok('font-family') ?? f.f, tok('font-size') ?? f.s, f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : null, lh != null ? `lh${lh}` : null,
@@ -122,7 +135,7 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   let lv: Layout | null = l ? { ...l, w: undefined, h: undefined, abs: undefined } : null;
   const v = s?.vars;
   if (lv && v) {
-    const tok = (k: string) => (v[k] ? `$${c.tokens.nameFor(v[k])}` : undefined);
+    const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes) : undefined);
     if (v.gap && lv.gap !== undefined) lv.gap = tok('gap');
     const sides = ['pad-top', 'pad-right', 'pad-bottom', 'pad-left'];
     if (sides.some((k) => v[k])) lv = { ...lv, pad: sides.map((k, i) => tok(k) ?? (lv!.pad?.[i] ?? 0)) as unknown as number[] };
@@ -131,16 +144,53 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (ls) head.push(ls);
   else if ((n.type === 'frame' || n.type === 'component') && n.nchild > 0 && !l?.dir) head.push('children-abs');
   if (l?.abs) head.push('abs');
+  if (raw?.revZ) head.push('z-reverse');
   if (raw?.mask) head.push(raw.maskType && raw.maskType !== 'ALPHA' ? `mask(${String(raw.maskType).toLowerCase()})` : 'mask');
   if (n.component_ref) head.push(`→${compLabel(c.db, n.component_ref)}`);
+  if (typeof raw?.usf === 'number') head.push(`scale=${Math.round(raw.usf * 1000) / 1000}`);
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
+  if (s?.link) head.push(`link=${s.link}`);
+  if (n.type === 'text' && n.text && s?.runs?.length) { const rr = runsStr(c, n.text, s, modes); if (rr) head.push(rr); }
   if (n.type === 'text' && raw?.list) head.push(`list=${raw.list}`);
   if (n.type === 'text' && raw?.textPath) head.push('on-path');
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
   if (VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n, geomKey)}`);
   if (!n.visible) head.push('(hidden)');
-  const style = [...styleParts(c, n, s, modes), fontStr(c, s)].filter(Boolean).join(' ');
+  const style = [...styleParts(c, n, s, modes), fontStr(c, s, modes)].filter(Boolean).join(' ');
   return { head: head.join(' '), style };
+}
+
+const fmtNum = (v: unknown) => (typeof v === 'number' ? Math.round(v * 1000) / 1000 : v);
+/**
+ * Character ranges with their own style: `runs[i-j "chars" <only what differs from the text's own style>; …]`. Indices are UTF-16
+ * offsets into `text=` (end exclusive). A range that equals the text's own style is left out.
+ */
+function runsStr(c: Ctx, text: string, s: Styles, modes?: string[]): string {
+  const base = s.font ?? {};
+  const parts: string[] = [];
+  let more = 0;
+  for (const r of s.runs as TextRun[]) {
+    if (r.i + r.n > text.length) continue;
+    const d: string[] = [];
+    const f = (r.font ?? {}) as Record<string, unknown>;
+    const same = (k: string) => (f[k] ?? null) === ((base as Record<string, unknown>)[k] ?? null);
+    if ('f' in f && !same('f')) d.push(`font=${f.f ?? 'inherit'}`);
+    if ('s' in f && !same('s')) d.push(`size=${fmtNum(f.s)}`);
+    if ('w' in f && !same('w')) d.push(`w${f.w ?? 400}`);
+    if ('st' in f && !same('st')) d.push(f.st === 'italic' ? 'italic' : 'not-italic');
+    if ('lh' in f && !same('lh')) d.push(f.lh == null ? 'lh=normal' : `lh${fmtNum(f.lh)}`);
+    if ('ls' in f && !same('ls')) d.push(`ls${f.ls ?? 0}`);
+    if ('deco' in f && !same('deco')) d.push(f.deco ? String(f.deco) : 'no-decoration');
+    if ('case' in f && !same('case')) d.push(`case=${f.case ?? 'none'}`);
+    if (r.fill && JSON.stringify(r.fill) !== JSON.stringify(s.fill ?? [])) d.push(`color=${paintsSpec(c, r.fill, modes) || 'none'}`);
+    if (r.link && r.link !== s.link) d.push(`link=${r.link}`);
+    if (r.sty && Object.keys(r.sty).length) d.push(`styles{${Object.entries(r.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
+    if (!d.length) continue;
+    if (parts.length >= 12) { more++; continue; }
+    parts.push(`${r.i}-${r.i + r.n} ${q(text.slice(r.i, r.i + r.n), 30)} ${d.join(' ')}`);
+  }
+  if (!parts.length) return '';
+  return `runs[${parts.join('; ')}${more ? `; +${more} more` : ''}]`;
 }
 
 /** Property values of an instance, shown only where its content is not expanded below it. */
@@ -176,7 +226,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       return p.type === 'group' || !l?.dir || l.dir === 'grid';
     };
     const walk = (v: VNode, d: number, parent: NodeRec | null, inh: string[] = []): void => {
-      const eff = v.modes ? [...inh, ...v.modes.map((m) => m.split('=').slice(1).join('='))] : inh;
+      const eff = v.modes ? [...inh, ...v.modes] : inh;
       if (items.length > cap) throw TOO_BIG;
       if (v.hidden && !c.includeHidden) {
         hiddenSkipped++;
@@ -209,7 +259,16 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     out.push('# Sizes: fill=fills parent, hug=fits content, number=fixed · @x,y only inside absolutely positioned parents (incl. group, grid) · row/col = flex direction');
     if (lines.some((l) => /\bpin=|\brot=|\bflip=|\bmask\b|\bgrid\b/.test(l.head + ' ' + l.style)))
       out.push('# pin=right|center-x|left+right|scale-x,bottom|center-y|top+bottom|scale-y: constraint of an @x,y layer (left/top when absent) · rot=deg counter-clockwise about @x,y · flip=x|y mirrored in its own box before rotating (CSS: transform-origin:0 0; transform:rotate(-deg) scaleX(-1)|scaleY(-1)) · visual@ = resulting box · mask = clips the following siblings, not drawn · grid = CSS grid, children at their saved @x,y');
-    if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`)');
+    if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`); $x{v} = the token has value v there');
+    // decided from the data, not the printed text (a text may contain "|x" or " runs[")
+    const usesNew = items.some((it) => {
+      const st = safeJson<Styles>(it.n.styles), rw = safeJson<Record<string, unknown>>(it.n.raw);
+      const bm = (ps?: Paint[]) => !!ps?.some((p) => p.bm);
+      return !!(st?.runs?.length || st?.link || st?.blend || st?.font?.trim || bm(st?.fill) || bm(st?.stroke?.paints) || rw?.revZ || typeof rw?.usf === 'number');
+    });
+    if (usesNew)
+      out.push('# runs[i-j "chars" …] = character range [i,j) of text= with its own style (only what differs; <span>) · link= hyperlink (URL or #node-id) · blend=mode / paint|mode = mix-blend-mode / background-blend-mode · trim=cap = text box trimmed to cap height and baseline (CSS text-box: trim-both cap alphabetic) · z-reverse = earlier children are painted on top of later ones (CSS: descending z-index) · scale=F on an instance = Figma scaled its component by F: every value below is already scaled');
+    if (getMeta(db, 'color_profile') === 'DISPLAY_P3') out.push(`# ${P3_NOTE}`);
     if (classes.size) {
       out.push('# Classes (repeated styles):');
       for (const [st, cl] of classes) out.push(`#   ${cl}: ${st}`);

@@ -112,9 +112,10 @@ export function gradientStr(p: Paint & { k: 'grad' }, w?: number | null, h?: num
 }
 
 export function paintStr(p: Paint, nameOf?: NameOf, w?: number | null, h?: number | null): string {
-  if (p.k === 'solid') return p.v ? `$${nameOf ? nameOf(p.v) : p.v}` : p.c ?? '?';
-  if (p.k === 'grad') return gradientStr(p, w, h);
-  return `img(${p.asset ?? p.url ?? '?'}${p.mode && p.mode !== 'cover' && p.mode !== 'fill' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})`;
+  const bm = p.bm ? `|${p.bm}` : '';
+  if (p.k === 'solid') return (p.v ? `$${nameOf ? nameOf(p.v) : p.v}` : p.c ?? '?') + bm;
+  if (p.k === 'grad') return gradientStr(p, w, h) + bm;
+  return `img(${p.asset ?? p.url ?? '?'}${p.mode && p.mode !== 'cover' && p.mode !== 'fill' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})${bm}`;
 }
 
 /** Text attributes besides the font: case, vertical alignment, truncation. */
@@ -124,6 +125,7 @@ export function textAttrs(f: Styles['font'] | undefined): string[] {
   if (f.case) out.push(`case=${f.case}`);
   if (f.va) out.push(`valign=${f.va}`);
   if (f.trunc) out.push(typeof f.trunc === 'number' ? `truncate lines=${f.trunc}` : 'truncate');
+  if (f.trim) out.push(`trim=${f.trim}`);
   return out;
 }
 
@@ -135,6 +137,7 @@ export function stylesStr(s: Styles | null | undefined, opts: { text?: boolean; 
   if (s.stroke) p.push(`stroke=${s.stroke.paints.map(pstr).join('+')}${s.stroke.w != null ? `/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w}` : ''}${s.stroke.dash?.length ? `/dash${s.stroke.dash.join(',')}` : ''}`);
   if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
   if (s.op != null) p.push(`op=${s.op}`);
+  if (s.blend) p.push(`blend=${s.blend}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.c ? ',' + e.c : ''})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
   if (s.font && opts.text !== false) {
     const f = s.font;

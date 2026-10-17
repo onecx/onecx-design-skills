@@ -42,6 +42,23 @@ export function tokenNames(tokens: TokenRec[]): Map<string, string> {
 
 export const isAlias = (v: unknown): v is string => typeof v === 'string' && v.startsWith('alias:');
 
+/**
+ * The explicit mode in effect for a variable: the innermost entry of `modes` ("Collection=Mode", outermost first) that names the
+ * variable's own collection and one of its modes. Mode names alone are not unique across collections ("Dark" in two themes).
+ * Bare entries (no "=") match by mode name only.
+ */
+export function pickMode(modes: string[] | undefined, collection: string, values: Record<string, unknown>): string | undefined {
+  if (!modes?.length) return undefined;
+  for (let i = modes.length - 1; i >= 0; i--) {
+    const m = modes[i];
+    const at = m.indexOf('=');
+    if (at < 0) { if (m in values) return m; continue; }
+    const name = m.slice(at + 1);
+    if (m.slice(0, at) === collection && name in values) return name;
+  }
+  return undefined;
+}
+
 /** Resolves aliases (alias:<id>) to a concrete value for a mode; guards against cycles. */
 export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: string, depth = 0, modes?: string[]): unknown {
   const keys = Object.keys(t.values);
@@ -50,7 +67,7 @@ export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: str
     const target = byId.get(v.slice(6));
     if (!target) return v;
     // an alias target of another collection resolves in that collection's explicit mode if the context sets one
-    const m = modes ? [...modes].reverse().find((x) => x in target.values) : undefined;
+    const m = pickMode(modes, target.collection, target.values);
     return resolveValue(byId, target, m ?? mode, depth + 1, modes);
   }
   return v;
@@ -89,10 +106,29 @@ export class TokenIndex {
       const all = modesOf(this.tokens);
       this.mode = all.includes('default') ? 'default' : all.find((m) => /light/i.test(m)) ?? all[0];
     }
-    // the innermost explicit mode that this variable's collection defines wins
-    const own = modes ? [...modes].reverse().find((m) => m in t.values) : undefined;
-    const v = resolveValue(this.byId, t, own ?? this.mode, 0, modes);
+    // the innermost explicit mode of this variable's collection wins; without one, the collection's first (default) mode
+    const own = pickMode(modes, t.collection, t.values);
+    const v = resolveValue(this.byId, t, own ?? Object.keys(t.values)[0] ?? this.mode, 0, modes);
     return typeof v === 'string' && v.startsWith('#') ? v : undefined;
+  }
+  /** Concrete value of any token (number, string, color) under the explicit modes (innermost first that the collection defines). */
+  valueOf(ref: string, modes?: string[]): unknown {
+    const t = this.byName.get(ref) ?? this.byId.get(ref);
+    if (!t) return undefined;
+    if (!this.mode) {
+      const all = modesOf(this.tokens);
+      this.mode = all.includes('default') ? 'default' : all.find((m) => /light/i.test(m)) ?? all[0];
+    }
+    const own = pickMode(modes, t.collection, t.values);
+    // without an explicit mode a variable shows its collection's first (default) mode
+    const v = resolveValue(this.byId, t, own ?? Object.keys(t.values)[0] ?? this.mode, 0, modes);
+    return isAlias(v) ? undefined : v;
+  }
+  /** The value a token takes under `modes` when it differs from its default-mode value (else undefined). */
+  modeValue(ref: string, modes?: string[]): unknown {
+    if (!modes?.length) return undefined;
+    const a = this.valueOf(ref, modes), b = this.valueOf(ref);
+    return a !== undefined && a !== b ? a : undefined;
   }
   get empty(): boolean { return this.tokens.length === 0; }
   private names?: Map<string, string>;
@@ -109,21 +145,29 @@ export class TokenIndex {
 
 /** Default-mode value of a variable by id or guid, following aliases (used for text bound to a STRING variable). */
 export class VarLookup {
-  private cache = new Map<string, Record<string, unknown> | null>();
-  constructor(private get: (id: string) => string | undefined) {}
-  private vals(id: string): Record<string, unknown> | null {
-    if (!this.cache.has(id)) this.cache.set(id, safeJson<Record<string, unknown>>(this.get(id)) ?? null);
+  private cache = new Map<string, { v: Record<string, unknown>; c: string } | null>();
+  /** `get` returns the variable's values JSON and its collection name */
+  constructor(private get: (id: string) => { vals: string; collection?: string | null } | undefined) {}
+  private rec(id: string): { v: Record<string, unknown>; c: string } | null {
+    if (!this.cache.has(id)) {
+      const r = this.get(id);
+      const v = safeJson<Record<string, unknown>>(r?.vals);
+      this.cache.set(id, v ? { v, c: r?.collection ?? '' } : null);
+    }
     return this.cache.get(id) ?? null;
   }
-  value(id: string, depth = 0): unknown {
-    const v = this.vals(id);
-    if (!v) return undefined;
-    const first = Object.values(v)[0];
-    if (isAlias(first) && depth < 10) return this.value(first.slice(6), depth + 1);
+  /** `modes` = explicit modes in effect ("Collection=Mode", outermost first): the innermost one of the variable's collection wins. */
+  value(id: string, depth = 0, modes?: string[]): unknown {
+    const r = this.rec(id);
+    if (!r) return undefined;
+    const v = r.v;
+    const m = pickMode(modes, r.c, v);
+    const first = m !== undefined ? v[m] : Object.values(v)[0];
+    if (isAlias(first) && depth < 10) return this.value(first.slice(6), depth + 1, modes);
     return first;
   }
-  string(id: string): string | undefined {
-    const v = this.value(id);
+  string(id: string, modes?: string[]): string | undefined {
+    const v = this.value(id, 0, modes);
     return typeof v === 'string' && !isAlias(v) ? v : undefined;
   }
 }
