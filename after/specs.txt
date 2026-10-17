@@ -1,0 +1,34 @@
+=== nuxtui 20:113156
+"Button/White/Solid/Default/sm/Leading" component hug(91)×hug(32) row gap=6 pad=6,10 fill=$colors-white-solid-background-color stroke=$colors-white-solid-border-color/1/inner r=6
+  "heroicons-outline/plus-small" instance 20×20 →heroicons-outline/plus-small clip
+    "icon" path 10×10 @5,5 pin=scale-x,scale-y svg=assets/icon-233:9475-9eb2ff.svg fill=$colors-white-solid-text-color (outline of a 1.5px stroke)
+  "Button" text hug(45)×hug(20) text="Button" color=$colors-white-solid-text-color font=Inter/14/w500/lh1.429
+=== gold-preview 1:1697
+"Toolbar and Send Button" frame fill×hug(48) row jc=between ai=center
+  "Toolbar" frame hug(116)×hug(48) row gap=$utilities-spacing-0-5 pad=$utilities-spacing-2
+    "_WYSIWYG-toolbar-button" instance 32×32 row jc=center ai=center →_WYSIWYG-toolbar-button .s1
+      "bold" instance 18×18 →paperclip clip
+        "Vector" path 14.58×15 @1.5,1.5 pin=scale-x,scale-y svg=assets/vector-1:1644-62a0c4.svg .s2
+    "_WYSIWYG-toolbar-button" instance 32×32 row jc=center ai=center →_WYSIWYG-toolbar-button .s1
+      "bold" instance 24×24 →smile clip
+        "Vector" path 15×15 @1.5,1.5 pin=scale-x,scale-y svg=assets/vector-1:1646-d18691.svg .s2
+        "Vector" path 6×1.5 @6,10.5 pin=scale-x,scale-y svg=assets/vector-1:1647-2a8991.svg .s2
+        "Vector" path 0.01×0 @6.75,6.75 pin=scale-x,scale-y svg=assets/vector-1:1648-c9e3b1.svg .s2
+        "Vector" path 0.01×0 @11.25,6.75 pin=scale-x,scale-y svg=assets/vector-1:1649-c9e3b1.svg .s2
+    "_WYSIWYG-toolbar-button" instance 32×32 row jc=center ai=center →_WYSIWYG-toolbar-button .s1
+      "bold" instance 24×24 →trash-2 clip
+        "Vector" path 13.5×0 @2.25,4.5 pin=scale-x,scale-y svg=assets/vector-1:1651-39b894.svg .s2
+=== gold-preview 1:1491
+"Image" group 70×44.75
+  "Vector 129" path 17.21×36.15 @0,6.89 svg=assets/vector-129-1:1492.svg fill=$theme-default-primary (outline of a 2px stroke)
+  "Vector 131" path 17.21×36.15 @70,6.89 visual@52.79,6.89 17.21×36.15 svg=assets/vector-131-1:1493.svg fill=$theme-default-primary (outline of a 2px stroke) flip=x
+  "Rectangle 1" rect 37.87×44.75 @16.07,0 stroke=$theme-default-primary/2/inner r=6 fx=shadow(0,3,3,#0000001f) styles{effect:"Drop Shadow/md"}
+  "Rectangle 2" path 37.87×24.1 @16.07,20.66 svg=assets/rectangle-2-1:1495.svg fill=$theme-accent-primary-2 stroke=$theme-default-primary/2/inner
+  "Ellipse 139" ellipse 10.33×10.33 @34.43,9.18 svg=assets/ellipse-139-1:1496.svg fill=$theme-accent-primary-2 stroke=$theme-default-primary/2/inner
+=== gold-preview 1:1870
+"Type=Bordered, State=Invalid, Size=Large, Shape=R…" component hug(400)×hug(60) col
+  "_input-large" instance 400×hug(60) col gap=$utilities-spacing-2-5 →_input-large
+    "Input" frame fill×hug(60) row ai=center fill=$theme-layer-layer stroke=$theme-destructive-destructive/1/outer r=$border-radius-lg clip
+      "Content" frame fill×hug(60) row ai=center
+        "Placeholder" frame fill×hug(60) row gap=$utilities-spacing-2-5 pad=$utilities-spacing-5
+          "Placeholder" text fill×hug(20) text="Input-lg" color=$theme-muted-muted-foreground-1 text-token=$basic-forms-input-input-lg styles{text:"SM/Medium"} font=Inter/14/w500/lh1.429/ls0.07
