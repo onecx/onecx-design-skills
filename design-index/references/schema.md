@@ -37,10 +37,10 @@ queried directly (always go through `design-query`).
 - `ow`: effective stroke weight of an outline icon (`raw.geometryFrom = "stroke"`) after an instance override or scale · `ifill`: the layer's own paints where a fill style replaced different ones, stored only on layers that some instance detaches from the style
 - `stroke`: `{paints, w (number or [t,r,b,l]), align, dash}` · `r` radius (number or [tl,tr,br,bl]; never on vectors) · `op` · `clip`
 - `rot` (degrees, counter-clockwise about the top-left origin) · `flip` x|y (mirrored before rotating; the full matrix is in `raw.m`)
-- `fx`: shadows/blur (`blur` = Figma radius) · `font`: `{f, s, w, lh (factor; absent = normal), ls, al, st, deco, case, va (center|bottom), trunc (true or max lines), nlh (font's natural line height factor), trim ("cap" = leading trim to cap height)}`
+- `fx`: shadows/blur (`blur` = Figma radius) · `font`: `{f, s (px), w, lh (factor; absent = Figma "Auto" = normal, printed `lh-normal(Npx)` with N = Figma's computed pitch: `lpx` when saved, else round(nlh × s)), lpx (Figma's saved line pitch in px under Auto), ls (px number, or "N%" unresolved), al, st, deco, case, va (center|bottom), trunc (true or max lines), nlh (font's natural line height factor), trim ("cap" = leading trim to cap height)}`
 - `vars`: bound variables by field (`gap`, `pad-top|right|bottom|left`, `radius`, `r-tl|tr|br|bl`, `width`, `height`, `min-/max-width|height`, `font-family`, `font-size`, `font-style`, `line-height`, `letter-spacing`, `opacity`, `stroke-weight`, `border-*`, `text`, …) → variable id
 - `sty`: names of the shared styles the values come from (`text`, `fill`, `stroke`, `effect`)
-- `v` refers to `variables.id`/`guid`; the name is in `variables.name`, the CSS variable is `--<name-in-kebab-case>`.
+- `v` refers to `variables.id`/`guid`; the name is in `variables.name`, the CSS variable is `--<name-in-kebab-case>`. Text output prints a reference as `$name(value)` (value resolved through aliases and the mode in effect; lengths in px).
 
 ## Format specifics
 - **.pen** (JSON, schema "2.21", comments allowed): auto-layout without computed positions; the default layout of a frame is horizontal.

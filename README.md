@@ -108,7 +108,21 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
   - Explicit variable modes on layout: a bound `gap`, padding, width/height or min/max size whose mode value differs from the saved one re-lays out that
     auto-layout container (the pen solver's rules on Figma's saved child sizes; hug sizes recomputed, fill children resized) and its auto-layout ancestors;
     everything else keeps Figma's saved geometry. `spec` is unchanged (`gap=$token{24}`).
-  - Index schema 25 (re-ingest happens automatically).
+  - `spec`/`tree`/`node` print Figma's "Auto" line height explicitly as `lh-normal(33px)` (CSS `line-height: normal`; the px value is Figma's computed line pitch: the pitch saved with the text's layout
+    (unrounded on older texts, e.g. 65.63px), else the natural line height × font size as Figma rounds it; plain `lh-normal` when the font's metrics are
+    unknown, e.g. after an override changed the family; .pen texts without a line height print none), also for ranges with their own size or font, under a variable mode's font size and in scaled instances.
+    Before, Auto printed no `lh` at all and a small model guessed `line-height: 1.2` (medium-complex `1:91`: Avenir Next 24, 33 px pitch).
+  - Letter spacing carries its unit everywhere (`spec`, runs, classes, `tree`, `node`): `ls0.1px` (was `ls0.1`, which a small model read as em,
+    about 15× too wide). Line-height and letter-spacing tokens show their px value like every token (`lh$line-height-sm(20px)`). Font size stays a plain px number, `lh1.429` a unitless multiplier (documented in SKILL.md).
+  - Token references carry their value: `fill=$theme-destructive(#ef4444)`, `r=$border-radius-lg(8px)`, `gap=$spacing-2-5(10px)` in `spec`, `tree` and
+    `node` (alias chains resolved; in `spec` under the explicit mode in context, which replaces the `$token{value}` notation of 0.1.2-0.1.4). A small model
+    had guessed hex values for token names whose value sat behind an alias chain in `tokens`. material3 `49823:12508` spec: 12,982 → 13,303 characters
+    (~3,330 tokens); gold-preview `1:1697`: 3,974 characters (~1,000 tokens). `.pen` `$name` references in font fields resolve the same way;
+    an alias into another collection resolves in that collection's default mode unless the context sets one; cycles and missing targets print `$name`.
+  - Auto line height: the px value prefers the pitch Figma saved with the text (legacy texts keep it unrounded: material3 `53379:35518` 65.63px for a
+    197 px three-line box); an override with another font family drops the component font's metrics; a font size under a variable mode and instance
+    scale are taken into account.
+  - Index schema 26 (re-ingest happens automatically).
 - **0.1.4** — the `.fig` findings 0.1.3 left open (same research report).
   - Mixed text styles: `characterStyleIDs` + `styleOverrideTable` become ranges (`runs[6-9 "big" w700 underline color=… link=…]` in `spec`, one
     `<tspan>` per range in `screenshot`), including each range's own text/fill style (material3 link ranges are purple via "M3/sys/light/primary",

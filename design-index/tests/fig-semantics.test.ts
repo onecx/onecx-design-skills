@@ -354,7 +354,7 @@ describe('text (F02, F03, F12)', () => {
     expect(f.lh).toBeUndefined();
     expect(f.nlh).toBe(1.21);
     expect(f.w).toBe(500);
-    expect(lineOf('1:1', 'Auto')).toMatch(/font=Inter\/18\/w500( |$)/);
+    expect(lineOf('1:1', 'Auto')).toMatch(/font=Inter\/18\/w500\/lh-normal\(22px\)( |$)/);
   });
   it('reads RAW as a multiplier and other PERCENT values as % of the natural line height', () => {
     expect(styles('4:2').font.lh).toBe(1.4);
@@ -507,7 +507,7 @@ describe('renderer regressions', () => {
 
 describe('review fixes', () => {
   it('prints numbers for corners a partial radius binding leaves unbound', () => {
-    expect(lineOf('1:1', 'HalfBound')).toContain('r=$radius-md,4,0,0');
+    expect(lineOf('1:1', 'HalfBound')).toContain('r=$radius-md(6px),4,0,0');
   });
   it('resolves a percentage line height of a text style against the consumer\'s font', () => {
     // 125 % of the drawn font's natural height (1.1499), not of a guessed 1.2 or of the style record's font
@@ -665,7 +665,7 @@ describe('uniformScaleFactor (F17)', () => {
 
 describe('explicit variable modes for numbers and text (F31, F07)', () => {
   it('prints the mode value of a bound number and draws it', () => {
-    expect(lineOf('25:1', 'ModeRadius')).toContain('r=$radius-card{12}');
+    expect(lineOf('25:1', 'ModeRadius')).toContain('r=$radius-card(12px)');
     expect(render('25:1').svg).toMatch(/rx="12"/);
   });
   it('shows a bound text under the explicit mode, also inside instances', () => {

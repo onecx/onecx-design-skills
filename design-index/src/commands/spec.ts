@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
 import type { Layout, Paint, Styles, TextRun } from '../model.js';
 import { getMeta } from '../db.js';
-import { Out, gradientStr, layoutStr, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
+import { Out, gradientStr, layoutStr, lhNormal, lsStr, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
 import { compLabel, requireNode, type NodeRec } from './structure.js';
@@ -21,7 +21,8 @@ export const svgName = (n: { id: string; name: string; styles?: string | null },
 
 const VECTOR_TYPES = new Set(['path', 'line', 'polygon', 'ellipse', 'boolean']);
 
-interface Ctx { db: DatabaseSync; tokens: TokenIndex; assets: Map<string, { path: string; mime: string }>; includeHidden: boolean }
+/** `fig` = the source has an explicit Auto line height (absent lh = Figma Auto); .pen leaves an unset line height unspecified */
+interface Ctx { db: DatabaseSync; tokens: TokenIndex; assets: Map<string, { path: string; mime: string }>; includeHidden: boolean; fig: boolean }
 
 /** Explanation printed where a Display-P3 document's colours appear (spec header, summary, tokens). */
 export const P3_NOTE = 'colours: the document is Display-P3 (Figma colour profile); every hex value is converted to sRGB and ready for CSS as is. Colours outside sRGB are clamped to its edge: ask the user before using color(display-p3 …) for them. Embedded images are exported unchanged (still P3)';
@@ -37,10 +38,8 @@ function paintSpec(c: Ctx, p: Paint, modes?: string[], w?: number | null, h?: nu
     return t ? `${p.c}(=$${t}?)` : p.c;
   }
   if (p.k === 'solid' && p.v) {
-    // under explicit variable modes (e.g. Theme) the token can have another value than in the default CSS: state it
-    let eff = '';
-    if (modes?.length) { const a = c.tokens.colorValue(p.v, modes), b = c.tokens.colorValue(p.v); if (a && a !== b) eff = `{${a}}`; }
-    return `$${c.tokens.nameFor(p.v)}${eff}`;
+    // the value in effect here (default mode, or the explicit mode of the context)
+    return c.tokens.ref(p.v, modes);
   }
   if (p.k === 'img') {
     const a = p.asset ? c.assets.get(p.asset) : undefined;
@@ -51,9 +50,8 @@ function paintSpec(c: Ctx, p: Paint, modes?: string[], w?: number | null, h?: nu
 }
 
 /** `$token`, plus `{value}` when the explicit modes in effect give it another value than its default mode. */
-function tokRef(c: Ctx, ref: string, modes?: string[]): string {
-  const mv = c.tokens.modeValue(ref, modes);
-  return `$${c.tokens.nameFor(ref)}${mv !== undefined ? `{${typeof mv === 'number' ? Math.round(mv * 1000) / 1000 : String(mv)}}` : ''}`;
+function tokRef(c: Ctx, ref: string, modes?: string[], key?: string): string {
+  return c.tokens.ref(ref, modes, key);
 }
 
 /** Keys of Styles.vars that are printed in place of the value they bind (gap, padding, radius, font) instead of separately. */
@@ -64,7 +62,7 @@ function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r'], modes?: st
   const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => v[k] ?? v.radius);
   if (!corners.some(Boolean)) return undefined;
   const nums = Array.isArray(r) ? r : [r ?? 0, r ?? 0, r ?? 0, r ?? 0];
-  const names = corners.map((x, i) => (x ? tokRef(c, x, modes) : String(nums[i] ?? 0)));
+  const names = corners.map((x, i) => (x ? tokRef(c, x, modes, 'radius') : String(nums[i] ?? 0)));
   return new Set(names).size === 1 ? names[0] : names.join(',');
 }
 
@@ -85,7 +83,7 @@ function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): str
   if (s.rot) p.push(`rot=${s.rot}`);
   if (s.flip) p.push(`flip=${s.flip}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `${e.inner ? 'inset-' : ''}shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.spread ? ',' + e.spread : ''},${e.c ?? '#000'})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
-  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=${tokRef(c, v, modes)}`));
+  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=${tokRef(c, v, modes, k)}`));
   if (s.vars?.text && isText) p.push(`text-token=$${c.tokens.nameFor(s.vars.text)}`);
   if (s.sty) p.push(`styles{${Object.entries(s.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
   return p;
@@ -95,11 +93,17 @@ function fontStr(c: Ctx, s: Styles | null, modes?: string[]): string {
   const f = s?.font;
   if (!f) return '';
   const v = s?.vars ?? {};
-  const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes) : undefined);
-  const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : f.lh) : undefined);
-  const ls = tok('letter-spacing') ?? (f.ls != null ? (typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : f.ls) : undefined);
-  const font = 'font=' + [tok('font-family') ?? f.f, tok('font-size') ?? f.s, f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : null, lh != null ? `lh${lh}` : null,
-    ls != null ? `ls${ls}` : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
+  // a bound variable (fig) or a `$name` reference stored in the field itself (.pen) prints as `$name(value)`
+  const lit = (x: unknown, k: string): unknown => (typeof x === 'string' && x.startsWith('$') ? tokRef(c, x.slice(1), modes, k) : x);
+  const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k) : undefined);
+  // line height / letter spacing variables hold px values (Figma), the literal lh is a multiplier
+  const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : lit(f.lh, 'line-height')) : undefined);
+  const ls = tok('letter-spacing') ?? (f.ls != null ? (typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : lit(f.ls, 'letter-spacing')) : undefined);
+  // a font size bound to a variable under an explicit mode: the pitch follows the mode's size
+  const ms = v['font-size'] ? c.tokens.modeValue(v['font-size'], modes) : undefined;
+  const modeSize = typeof ms === 'number' ? ms : undefined;
+  const font = 'font=' + [tok('font-family') ?? lit(f.f, 'font-family'), tok('font-size') ?? lit(f.s, 'font-size'), f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${lit(f.w, 'font-weight')}` : null, lh != null ? `lh${lh}` : c.fig ? lhNormal(f, modeSize) : null,
+    ls != null ? lsStr(ls) : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
   return [font, ...textAttrs(f)].join(' ');
 }
 
@@ -135,7 +139,7 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   let lv: Layout | null = l ? { ...l, w: undefined, h: undefined, abs: undefined } : null;
   const v = s?.vars;
   if (lv && v) {
-    const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes) : undefined);
+    const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k) : undefined);
     if (v.gap && lv.gap !== undefined) lv.gap = tok('gap');
     const sides = ['pad-top', 'pad-right', 'pad-bottom', 'pad-left'];
     if (sides.some((k) => v[k])) lv = { ...lv, pad: sides.map((k, i) => tok(k) ?? (lv!.pad?.[i] ?? 0)) as unknown as number[] };
@@ -178,8 +182,14 @@ function runsStr(c: Ctx, text: string, s: Styles, modes?: string[], w?: number |
     if ('s' in f && !same('s')) d.push(`size=${fmtNum(f.s)}`);
     if ('w' in f && !same('w')) d.push(`w${f.w ?? 400}`);
     if ('st' in f && !same('st')) d.push(f.st === 'italic' ? 'italic' : 'not-italic');
-    if ('lh' in f && !same('lh')) d.push(f.lh == null ? 'lh=normal' : `lh${fmtNum(f.lh)}`);
-    if ('ls' in f && !same('ls')) d.push(`ls${f.ls ?? 0}`);
+    // auto line height ("normal") follows the range's own size/font: state the pitch explicitly; the natural line height is known
+    // for the text's own font only
+    const sizeOrFont = ('s' in f && !same('s')) || ('f' in f && !same('f'));
+    const autoLh = ('lh' in f ? f.lh : base.lh) == null;
+    const nat = !('f' in f) || same('f') ? base.nlh : undefined;
+    if (autoLh && (('lh' in f && !same('lh')) || sizeOrFont)) d.push(lhNormal({ nlh: nat }, typeof f.s === 'number' ? f.s : base.s));
+    else if ('lh' in f && !same('lh')) d.push(`lh${fmtNum(f.lh)}`);
+    if ('ls' in f && !same('ls')) d.push(lsStr(f.ls ?? 0));
     if ('deco' in f && !same('deco')) d.push(f.deco ? String(f.deco) : 'no-decoration');
     if ('case' in f && !same('case')) d.push(`case=${f.case ?? 'none'}`);
     if (r.emoji) d.push('emoji');
@@ -208,7 +218,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
   const root = requireNode(db, id);
   const assets = new Map<string, { path: string; mime: string }>();
   for (const a of db.prepare('SELECT hash,path,mime FROM assets').all() as { hash: string; path: string; mime: string }[]) assets.set(a.hash, a);
-  const c: Ctx = { db, tokens: new TokenIndex(db), assets, includeHidden: !!opts.includeHidden };
+  const c: Ctx = { db, tokens: new TokenIndex(db), assets, includeHidden: !!opts.includeHidden, fig: getMeta(db, 'format') === 'fig' };
 
   // each rendered line costs >= ~5 tokens: stop walking as soon as the budget cannot be met any more
   const cap = Number.isFinite(opts.maxTokens) ? Math.ceil(opts.maxTokens / 5) + 20 : Infinity;
@@ -256,11 +266,11 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     out.push(`# spec ${root.id} ${q(root.name, 60)} (${root.type}) ${sizeStr(root.w, root.h, safeJson(root.layout))} · P${root.page}`);
     out.push(c.tokens.empty
       ? '# no design tokens in the file: take values (hex, px) as constants/variables from tokens.css, do not invent them'
-      : '# $name = CSS variable var(--name) from `tokens`; "(=$x?)" = value equals token x but is not bound in the file (please verify)');
+      : '# $name(value) = use CSS variable var(--name) (from `tokens`); value = what it resolves to here (mode applied): use it if the project has no such token · "(=$x?)" = value equals token x but is not bound in the file (please verify)');
     out.push('# Sizes: fill=fills parent, hug=fits content, number=fixed · @x,y only inside absolutely positioned parents (incl. group, grid) · row/col = flex direction');
     if (lines.some((l) => /\bpin=|\brot=|\bflip=|\bmask\b|\bgrid\b/.test(l.head + ' ' + l.style)))
       out.push('# pin=right|center-x|left+right|scale-x,bottom|center-y|top+bottom|scale-y: constraint of an @x,y layer (left/top when absent) · rot=deg counter-clockwise about @x,y · flip=x|y mirrored in its own box before rotating (CSS: transform-origin:0 0; transform:rotate(-deg) scaleX(-1)|scaleY(-1)) · visual@ = resulting box · mask = clips the following siblings, not drawn · grid = CSS grid, children at their saved @x,y');
-    if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`); $x{v} = the token has value v there');
+    if (items.some((it) => it.modes)) out.push('# modes{Collection=Mode}: explicit variable mode on that frame; tokens below it resolve in that mode (CSS: [data-<collection>="<mode>"], see `tokens`); the (value) after a token is already the value in that mode');
     // decided from the data, not the printed text (a text may contain "|x" or " runs[")
     const usesNew = items.some((it) => {
       const st = safeJson<Styles>(it.n.styles), rw = safeJson<Record<string, unknown>>(it.n.raw);

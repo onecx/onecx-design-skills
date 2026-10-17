@@ -40,6 +40,9 @@ export function tokenNames(tokens: TokenRec[]): Map<string, string> {
   return out;
 }
 
+/** Styles.vars fields whose values are lengths in px */
+const PX_KEYS = /^(gap|row-gap|pad-|radius|r-|width|height|min-|max-|font-size|line-height|letter-spacing|stroke-weight|border-|paragraph-|grid-)/;
+
 export const isAlias = (v: unknown): v is string => typeof v === 'string' && v.startsWith('alias:');
 
 /**
@@ -66,9 +69,10 @@ export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: str
   if (isAlias(v) && depth < 10) {
     const target = byId.get(v.slice(6));
     if (!target) return v;
-    // an alias target of another collection resolves in that collection's explicit mode if the context sets one
+    // an alias target of another collection resolves in that collection's explicit mode if the context sets one, else in its
+    // default (first) mode; within the same collection the mode carries over
     const m = pickMode(modes, target.collection, target.values);
-    return resolveValue(byId, target, m ?? mode, depth + 1, modes);
+    return resolveValue(byId, target, m ?? (target.collection === t.collection ? mode : Object.keys(target.values)[0] ?? mode), depth + 1, modes);
   }
   return v;
 }
@@ -129,6 +133,21 @@ export class TokenIndex {
     if (!modes?.length) return undefined;
     const a = this.valueOf(ref, modes), b = this.valueOf(ref);
     return a !== undefined && a !== b ? a : undefined;
+  }
+  /**
+   * A token reference with its value where it is used: `$name(value)` = use var(--name); here it resolves to value (aliases
+   * followed, explicit modes applied). Lengths (`key` = a Styles.vars field such as gap, pad-top, radius, font-size) get `px`.
+   * Without a concrete value just `$name`.
+   */
+  ref(id: string, modes?: string[], key?: string): string {
+    const name = `$${this.nameFor(id)}`;
+    const v = this.valueOf(id, modes);
+    let s: string;
+    if (typeof v === 'number') s = `${Math.round(v * 1000) / 1000}${key && PX_KEYS.test(key) ? 'px' : ''}`;
+    else if (typeof v === 'string') s = v.length <= 40 && !/[()\s]/.test(v) ? v : JSON.stringify(v.length > 40 ? v.slice(0, 40) + '…' : v);
+    else if (typeof v === 'boolean') s = String(v);
+    else return name;
+    return `${name}(${s})`;
   }
   get empty(): boolean { return this.tokens.length === 0; }
   private names?: Map<string, string>;

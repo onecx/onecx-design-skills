@@ -81,7 +81,7 @@ export function layoutStr(l: Layout | null | undefined): string {
   return p.join(' ');
 }
 
-export type NameOf = (v: string) => string;
+export type NameOf = (v: string, key?: string) => string;
 const rnd = (v: number, d = 1) => { const f = 10 ** d; return Math.round(v * f) / f; };
 
 /**
@@ -118,6 +118,36 @@ export function paintStr(p: Paint, nameOf?: NameOf, w?: number | null, h?: numbe
   return `img(${p.asset ?? p.url ?? '?'}${p.mode && p.mode !== 'cover' && p.mode !== 'fill' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})${bm}`;
 }
 
+/**
+ * Figma "Auto" line height, explicit: `lh-normal(33px)` = CSS `line-height: normal`, with Figma's own line pitch
+ * round(natural line height × font size) when the font's natural line height is known; else `lh-normal`.
+ */
+export function lhNormal(f: { nlh?: unknown; lpx?: unknown; s?: unknown }, size?: unknown): string {
+  const p = autoPitch(f, size);
+  return p !== undefined ? `lh-normal(${Math.round(p * 100) / 100}px)` : 'lh-normal';
+}
+
+/**
+ * Figma's line pitch (px) of an Auto line height: the node's saved pitch (`lpx`) while it fits the font size in effect, else
+ * round(natural line height × size) as Figma computes it for current texts; undefined when the font's metrics are unknown.
+ * `size` = the size in effect when it differs from the saved one (variable mode, range).
+ */
+// The saved pitch is trusted only within max(1px, 5 %) of natural line height × size: a one-line text whose saved line is
+// taller because a range has a bigger size (the line takes the largest pitch) is rejected and falls back to round(nlh × size).
+export function autoPitch(f: { nlh?: unknown; lpx?: unknown; s?: unknown }, size?: unknown): number | undefined {
+  const s = typeof size === 'number' ? size : f.s;
+  const nlh = typeof f.nlh === 'number' && f.nlh > 0 ? f.nlh : undefined;
+  if (typeof f.lpx === 'number' && f.lpx > 0 && (size === undefined || size === f.s) && (!nlh || typeof s !== 'number' || Math.abs(f.lpx - nlh * s) <= Math.max(1, 0.05 * f.lpx))) return f.lpx;
+  return nlh && typeof s === 'number' && s > 0 ? Math.round(nlh * s) : undefined;
+}
+
+/** Letter spacing with its unit: numbers are px (`ls0.1px`), unresolved percentages keep `%`, tokens stay as they are. */
+export function lsStr(v: unknown): string {
+  if (typeof v === 'number') return `ls${Math.round(v * 100) / 100}px`;
+  const t = String(v);
+  return /^-?\d*\.?\d+$/.test(t) ? `ls${t}px` : `ls${t}`;
+}
+
 /** Text attributes besides the font: case, vertical alignment, truncation. */
 export function textAttrs(f: Styles['font'] | undefined): string[] {
   const out: string[] = [];
@@ -129,7 +159,8 @@ export function textAttrs(f: Styles['font'] | undefined): string[] {
   return out;
 }
 
-export function stylesStr(s: Styles | null | undefined, opts: { text?: boolean; isText?: boolean; nameOf?: NameOf } = {}): string {
+/** `fig` = absent line height is Figma's explicit Auto (printed `lh-normal`); .pen leaves it unspecified */
+export function stylesStr(s: Styles | null | undefined, opts: { text?: boolean; isText?: boolean; nameOf?: NameOf; fig?: boolean } = {}): string {
   const pstr = (p: Paint) => paintStr(p, opts.nameOf);
   if (!s) return '';
   const p: string[] = [];
@@ -140,14 +171,16 @@ export function stylesStr(s: Styles | null | undefined, opts: { text?: boolean; 
   if (s.blend) p.push(`blend=${s.blend}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.c ? ',' + e.c : ''})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
   if (s.font && opts.text !== false) {
-    const f = s.font;
-    p.push(`font=${[f.f, f.s != null ? `${f.s}` : '', f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : '', f.lh != null ? `lh${f.lh}` : '', f.ls != null ? `ls${f.ls}` : '', f.al, f.st, f.deco].filter((x) => x !== '' && x != null).join('/')}`);
+    // .pen stores `$name` references in font fields: print them as `$name(value)` like bound variables
+    const lit = (x: unknown, k: string): unknown => (typeof x === 'string' && x.startsWith('$') && opts.nameOf ? `$${opts.nameOf(x.slice(1), k)}` : x);
+    const f = { ...s.font, f: lit(s.font.f, 'font-family') as string | undefined, s: lit(s.font.s, 'font-size') as number | string | undefined };
+    p.push(`font=${[f.f, f.s != null ? `${f.s}` : '', f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : '', f.lh != null ? `lh${f.lh}` : opts.fig ? lhNormal(f) : '', f.ls != null ? lsStr(f.ls) : '', f.al, f.st, f.deco].filter((x) => x !== '' && x != null).join('/')}`);
     p.push(...textAttrs(f));
   }
   if (s.rot) p.push(`rot=${s.rot}`);
   if (s.flip) p.push(`flip=${s.flip}`);
   if (s.sty) p.push(`styles{${Object.entries(s.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
-  if (s.vars) p.push(`vars=${Object.entries(s.vars).map(([k, v]) => `${k}:$${opts.nameOf ? opts.nameOf(v) : v}`).join(',')}`);
+  if (s.vars) p.push(`vars=${Object.entries(s.vars).map(([k, v]) => `${k}:$${opts.nameOf ? opts.nameOf(v, k) : v}`).join(',')}`);
   return p.join(' ');
 }
 

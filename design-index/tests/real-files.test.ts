@@ -163,8 +163,8 @@ describe.skipIf(!fileOf('material3.fig'))('material3.fig (0.1.4)', () => {
   it('link ranges take the colour of their fill style (54727:23654)', async () => {
     const db = await open('material3.fig');
     const l = spec(db, '54727:23654').split('\n').find((x) => x.includes('"Overview copy"'))!;
-    expect(l).toContain('runs[0-16 "Material Symbols" w600 underline color=$schemes-primary link=https://m3.material.io/styles/icons/ styles{fill:"M3/sys/light/primary"}');
-    expect(l).toContain('268-291 "Material Symbols plugin" underline color=$schemes-primary link=https://www.figma.com/community/plugin/1088610476491668236/material-symbols');
+    expect(l).toContain('runs[0-16 "Material Symbols" w600 underline color=$schemes-primary(#6750a4) link=https://m3.material.io/styles/icons/ styles{fill:"M3/sys/light/primary"}');
+    expect(l).toContain('268-291 "Material Symbols plugin" underline color=$schemes-primary(#6750a4) link=https://www.figma.com/community/plugin/1088610476491668236/material-symbols');
   }, 120000);
   it('MULTIPLY gradients and reverse paint order (56576:11826)', async () => {
     const db = await open('material3.fig');
@@ -245,5 +245,23 @@ describe.skipIf(!fileOf('google_material_design.fig'))('google_material_design.f
     expect(strokes).toHaveLength(2);
     expect(strokes[0]).not.toContain('mix-blend-mode');
     expect(strokes[1]).toContain('style="mix-blend-mode:soft-light"');
+  });
+});
+
+describe.skipIf(!fileOf('medium-complex.fig'))('medium-complex.fig', () => {
+  it('Auto line height is explicit with Figma\'s saved pitch (1:91, Avenir Next 24, 33 px)', async () => {
+    expect(first(spec(await open('medium-complex.fig'), '1:91'))).toContain('font=Avenir Next/24/w700/lh-normal(33px)');
+  });
+});
+
+describe('Auto line height: Figma\'s saved pitch (unrounded on legacy texts)', () => {
+  it.skipIf(!fileOf('material3.fig'))('material3 53379:35518 (Roboto Bold 56, 3 lines, box 197)', async () => {
+    expect(first(spec(await open('material3.fig'), '53379:35518'))).toMatch(/hug\(197\).*font=Roboto\/56\/w700\/lh-normal\(65\.63px\)/);
+  }, 180000);
+  it.skipIf(!fileOf('medium-complex.fig'))('medium-complex 1:105 (box 60)', async () => {
+    expect(first(spec(await open('medium-complex.fig'), '1:105'))).toContain('font=Avenir Next/44/w700/lh-normal(60.1px)');
+  });
+  it.skipIf(!fileOf('gold-preview.fig'))('gold-preview 1:2104 (box 24)', async () => {
+    expect(styles(await open('gold-preview.fig'), '1:2104').font.lpx).toBe(24.205);
   });
 });

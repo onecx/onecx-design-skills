@@ -262,6 +262,11 @@ export function fontOf(n: Any, keepNull = false): NonNullable<Styles['font']> {
   if (cs !== undefined) f.case = cs;
   if (n.textTruncation !== undefined) f.trunc = n.textTruncation === 'ENDING' ? (typeof n.maxLines === 'number' && n.maxLines > 0 ? n.maxLines : true) : null;
   if (typeof nat === 'number' && nat > 0) f.nlh = r4(nat);
+  // Auto line height: the pitch Figma laid the lines out with (equal on every saved line; mixed sizes give none)
+  if (lh === null || (lh === undefined && n.lineHeight === undefined)) {
+    const bl = ((n.derivedTextData?.baselines ?? n.textData?.baselines ?? []) as Any[]).map((b) => b?.lineHeight).filter((v): v is number => typeof v === 'number' && v > 0);
+    if (bl.length && bl.every((v) => Math.abs(v - bl[0]) < 0.01)) f.lpx = r3(bl[0]);
+  }
   if (n.leadingTrim !== undefined) f.trim = n.leadingTrim === 'CAP_HEIGHT' ? 'cap' : null;
   for (const k of Object.keys(f)) {
     if (f[k] === undefined || (f[k] === null && !keepNull)) delete f[k];
@@ -289,7 +294,7 @@ function runStyle(e: Any, base: Any, ctx: Ctx): Omit<TextRun, 'i' | 'n'> | null 
       textCase: e.textCase, leadingTrim: e.leadingTrim, derivedTextData: base.derivedTextData,
     }, true);
     if (e.fontSize === undefined) delete f.s;
-    delete f.nlh;
+    delete f.nlh; delete f.lpx;
     if (!e.fontName && e.semanticWeight === 'BOLD') f.w = 700;
     if (!e.fontName && e.semanticItalic === 'ITALIC') f.st = 'italic';
     if (Object.keys(f).length) r.font = f as TextRun['font'];
@@ -515,7 +520,8 @@ export function convertOverride(o: Any, ctx: Ctx): Any | null {
   if (Array.isArray(o.effects)) st.fx = convertEffects(o.effects, nu);
   if (typeof o.frameMaskDisabled === 'boolean') st.clip = !o.frameMaskDisabled;
   const font = fontOf(o, true);
-  delete font.nlh;
+  // the override's own saved metrics count only with its own font (else the target's font decides)
+  if (!o.fontName) { delete font.nlh; delete font.lpx; }
   if (Object.keys(font).length) st.font = font;
   if (runs?.length) st.runs = runs;
   const link = linkOf(o.hyperlink);
@@ -772,7 +778,7 @@ export function convertNode(n: Any, ctx: Ctx): Converted {
     if (stype === 'TEXT') {
       // the style decides these fields completely: a field it leaves out is its default (no decoration, original case, no tracking)
       const f: Record<string, unknown> = fontOf(n, true);
-      for (const k of ['nlh', 'al', 'va', 'trunc']) delete f[k];
+      for (const k of ['nlh', 'lpx', 'al', 'va', 'trunc']) delete f[k];
       // a percentage refers to the natural line height of the consumer's drawn font: resolved when the style is applied
       const lh = lineHeightOf(n.lineHeight, typeof n.fontSize === 'number' ? n.fontSize : undefined);
       if (typeof lh === 'string' && lh.endsWith('%')) f.lh = lh;

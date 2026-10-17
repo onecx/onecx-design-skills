@@ -8,8 +8,10 @@ import { openIndex } from '../src/cache.js';
 import { ingest } from '../src/ingest.js';
 import { buildSpec } from '../src/commands/spec.js';
 import { renderSvg, svgToPng } from '../src/render.js';
-import { buildFig, buildZip, pathBlob, solid, type FigNode } from './helpers/fig-builder.js';
+import { bindVar, buildFig, buildZip, g, pathBlob, solid, type FigNode } from './helpers/fig-builder.js';
 import { modesDemoNodes } from './helpers/modes-demo.js';
+import { autoPitch, stylesStr } from '../src/output.js';
+import { nameOfFor } from '../src/commands/structure.js';
 import { makePng } from './helpers/png.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'di-lim-'));
@@ -18,6 +20,7 @@ const grad = (r0: number[], r1: number[], extra: Record<string, unknown> = {}) =
   stops: [{ color: { r: r0[0], g: r0[1], b: r0[2], a: 1 }, position: 0 }, { color: { r: r1[0], g: r1[1], b: r1[2], a: 1 }, position: 1 }], ...extra,
 });
 const emoji = (cps: number[]) => ({ type: 'EMOJI', opacity: 1, visible: true, blendMode: 'NORMAL', emojiCodePoints: cps });
+const meta = (family: string, style: string, fontLineHeight: number, fontWeight: number) => ({ fontMetaData: [{ key: { family, style }, fontLineHeight, fontWeight }] });
 const blobs = [pathBlob([[1, 0, 0], [2, 10, 0], [2, 10, 10], [2, 0, 10], [0]])];
 
 const nodes = (): FigNode[] => [
@@ -55,6 +58,59 @@ const nodes = (): FigNode[] => [
   { id: [2, 7], type: 'TEXT', name: 'SeqRun', parent: [1, 1], pos: '$2', w: 300, h: 50, text: '👍🏽 👨‍👩‍👧',
     extra: { fontSize: 20, fillPaints: [solid(0, 0, 0)],
       textData: { characters: '👍🏽 👨‍👩‍👧', styleOverrideTable: [{ styleID: 1, fillPaints: [emoji([128077])] }, { styleID: 2, fillPaints: [emoji([128104])] }, { styleID: 3, fillPaints: [emoji([128105])] }] } } },
+  // Auto line height (no lineHeight): explicit in spec, with Figma's pitch from the saved natural line height
+  { id: [2, 8], type: 'TEXT', name: 'AutoLh', parent: [1, 1], pos: '$3', w: 300, h: 50, text: 'small BIG Other',
+    extra: { fontSize: 20, fontName: { family: 'Inter', style: 'Regular' }, derivedTextData: { fontMetaData: [{ key: { family: 'Inter', style: 'Regular' }, fontLineHeight: 1.21, fontWeight: 400 }] },
+      textData: { characters: 'small BIG Other', characterStyleIDs: [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 2, 2, 2, 2], styleOverrideTable: [
+        { styleID: 1, fontSize: 30 }, { styleID: 2, fontName: { family: 'Roboto', style: 'Regular' } }] } } },
+  { id: [2, 9], type: 'TEXT', name: 'AutoLhUnknown', parent: [1, 1], pos: '$4', w: 300, h: 50, text: 'x', extra: { fontSize: 20 } },
+  { id: [2, 10], type: 'TEXT', name: 'FixedLh', parent: [1, 1], pos: '$5', w: 300, h: 50, text: 'x', extra: { fontSize: 20, lineHeight: { value: 30, units: 'PIXELS' } } },
+  // letter spacing is printed with its unit (px; percentages are resolved against the font size)
+  { id: [2, 11], type: 'TEXT', name: 'Tracking', parent: [1, 1], pos: '$6', w: 300, h: 50, text: 'ab cd',
+    extra: { fontSize: 14, fontName: { family: 'Inter', style: 'Medium' }, lineHeight: { value: 20, units: 'PIXELS' }, letterSpacing: { value: 0.1, units: 'PIXELS' },
+      textData: { characters: 'ab cd', characterStyleIDs: [0, 0, 0, 1, 1], styleOverrideTable: [{ styleID: 1, letterSpacing: { value: 5, units: 'PERCENT' } }] } } },
+  // Figma's saved pitch (legacy, unrounded), an override with another family, a font size under a variable mode, a scaled instance
+  { id: [5, 1], type: 'TEXT', name: 'LegacyPitch', parent: [1, 1], pos: '$7', w: 228, h: 197, text: 'Big',
+    extra: { fontSize: 56, fontName: { family: 'Roboto', style: 'Bold' }, derivedTextData: { ...meta('Roboto', 'Bold', 1.17, 700), baselines: [{ lineHeight: 65.625 }, { lineHeight: 65.625 }, { lineHeight: 65.625 }] } } },
+  { id: [5, 2], type: 'SYMBOL', name: 'Label', parent: [0, 1], pos: 'y0', w: 100, h: 30 },
+  { id: [5, 3], type: 'TEXT', name: 'LabelText', parent: [5, 2], pos: '!', w: 100, h: 25, text: 'Hi', ok: [5, 30],
+    extra: { fontSize: 21, fontName: { family: 'Inter', style: 'Regular' }, derivedTextData: meta('Inter', 'Regular', 1.17, 400) } },
+  { id: [5, 4], type: 'INSTANCE', name: 'OtherFamily', parent: [1, 1], pos: '$8', w: 100, h: 30, symbol: [5, 2],
+    overrides: [{ path: [[5, 30]], extra: { fontName: { family: 'Roboto', style: 'Regular' } } }] },
+  { id: [5, 5], type: 'INSTANCE', name: 'HalfLabel', parent: [1, 1], pos: '$9', w: 50, h: 15, extra: { symbolData: { symbolID: g([5, 2]), uniformScaleFactor: 0.5 } } },
+  { id: [5, 6], type: 'FRAME', name: 'LooseText', parent: [1, 1], pos: '$a', w: 100, h: 40,
+    extra: { variableModeBySetMap: { entries: [{ variableSetID: { assetRef: { key: 'dset' } }, variableModeID: g([40, 2]) }] } } },
+  { id: [5, 7], type: 'TEXT', name: 'ModeSized', parent: [5, 6], pos: '!', w: 100, h: 20, text: 'x',
+    extra: { fontSize: 16, fontName: { family: 'Inter', style: 'Regular' }, derivedTextData: meta('Inter', 'Regular', 1.21, 400), variableConsumptionMap: { entries: [bindVar('FONT_SIZE', 'fsv')] } } },
+  { id: [5, 8], type: 'VARIABLE', name: 'type/size', key: 'fsv', setKey: 'dset', varType: 'FLOAT', values: [{ mode: [40, 1], num: 16 }, { mode: [40, 2], num: 24 }] },
+  // token references carry their resolved value (alias chain followed, explicit mode applied)
+  { id: [6, 1], type: 'VARIABLE_SET', name: 'Colors', key: 'palset', modes: [{ id: [6, 2], name: 'Value' }] },
+  { id: [6, 3], type: 'VARIABLE', name: 'colors/red-500', key: 'red500', setKey: 'palset', varType: 'COLOR', values: [{ mode: [6, 2], color: [0.937, 0.267, 0.267, 1] }] },
+  { id: [6, 4], type: 'VARIABLE', name: 'colors/red-400', key: 'red400', setKey: 'palset', varType: 'COLOR', values: [{ mode: [6, 2], color: [0.973, 0.443, 0.443, 1] }] },
+  { id: [6, 5], type: 'VARIABLE_SET', name: 'Theme', key: 'thmset', modes: [{ id: [6, 6], name: 'Light' }, { id: [6, 7], name: 'Dark' }] },
+  { id: [6, 8], type: 'VARIABLE', name: 'theme/destructive', key: 'destr', setKey: 'thmset', varType: 'COLOR', values: [{ mode: [6, 6], alias: 'red500' }, { mode: [6, 7], alias: 'red400' }] },
+  { id: [6, 9], type: 'VARIABLE', name: 'radius/lg', key: 'rlg', setKey: 'thmset', varType: 'FLOAT', values: [{ mode: [6, 6], num: 8 }, { mode: [6, 7], num: 8 }] },
+  { id: [6, 10], type: 'ROUNDED_RECTANGLE', name: 'Danger', parent: [1, 1], pos: '$b', w: 40, h: 20,
+    extra: { cornerRadius: 8, fillPaints: [solid(0.937, 0.267, 0.267, { colorVar: { value: { alias: { assetRef: { key: 'destr' } } }, dataType: 'ALIAS' } })],
+      variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rlg')] } } },
+  { id: [6, 11], type: 'FRAME', name: 'DarkTheme', parent: [1, 1], pos: '$c', w: 100, h: 40,
+    extra: { variableModeBySetMap: { entries: [{ variableSetID: { assetRef: { key: 'thmset' } }, variableModeID: g([6, 7]) }] } } },
+  { id: [6, 12], type: 'ROUNDED_RECTANGLE', name: 'DarkDanger', parent: [6, 11], pos: '!', w: 40, h: 20,
+    extra: { fillPaints: [solid(0.937, 0.267, 0.267, { colorVar: { value: { alias: { assetRef: { key: 'destr' } } }, dataType: 'ALIAS' } })] } },
+  // alias into another collection (its default mode, not the source's mode name), alias cycle, missing alias target
+  { id: [6, 20], type: 'VARIABLE_SET', name: 'Ramp', key: 'rampset', modes: [{ id: [6, 21], name: 'Base' }, { id: [6, 22], name: 'Light' }] },
+  { id: [6, 23], type: 'VARIABLE', name: 'ramp/x', key: 'rampx', setKey: 'rampset', varType: 'COLOR', values: [{ mode: [6, 21], color: [0.0667, 0.0667, 0.0667, 1] }, { mode: [6, 22], color: [0.933, 0.933, 0.933, 1] }] },
+  { id: [6, 24], type: 'VARIABLE', name: 'theme/accent', key: 'accent', setKey: 'thmset', varType: 'COLOR', values: [{ mode: [6, 6], alias: 'rampx' }, { mode: [6, 7], alias: 'rampx' }] },
+  { id: [6, 25], type: 'VARIABLE', name: 'loop/a', key: 'loopa', setKey: 'palset', varType: 'COLOR', values: [{ mode: [6, 2], alias: 'loopb' }] },
+  { id: [6, 26], type: 'VARIABLE', name: 'loop/b', key: 'loopb', setKey: 'palset', varType: 'COLOR', values: [{ mode: [6, 2], alias: 'loopa' }] },
+  { id: [6, 27], type: 'VARIABLE', name: 'ghost', key: 'ghost', setKey: 'palset', varType: 'COLOR', values: [{ mode: [6, 2], alias: 'nothere' }] },
+  { id: [6, 28], type: 'ROUNDED_RECTANGLE', name: 'Accent', parent: [1, 1], pos: '$d', w: 10, h: 10, extra: { fillPaints: [solid(0, 0, 0, { colorVar: { value: { alias: { assetRef: { key: 'accent' } } }, dataType: 'ALIAS' } })] } },
+  { id: [6, 29], type: 'ROUNDED_RECTANGLE', name: 'Looped', parent: [1, 1], pos: '$e', w: 10, h: 10, extra: { fillPaints: [solid(0, 0, 0, { colorVar: { value: { alias: { assetRef: { key: 'loopa' } } }, dataType: 'ALIAS' } })] } },
+  { id: [6, 30], type: 'ROUNDED_RECTANGLE', name: 'Ghosted', parent: [1, 1], pos: '$f', w: 10, h: 10, extra: { fillPaints: [solid(0, 0, 0, { colorVar: { value: { alias: { assetRef: { key: 'ghost' } } }, dataType: 'ALIAS' } })] } },
+  // one line whose saved pitch comes from a bigger range: not the text's own pitch
+  { id: [5, 9], type: 'TEXT', name: 'MixedLine', parent: [1, 1], pos: '$g', w: 200, h: 36, text: 'a B',
+    extra: { fontSize: 20, fontName: { family: 'Inter', style: 'Regular' }, derivedTextData: { ...meta('Inter', 'Regular', 1.21, 400), baselines: [{ lineHeight: 36 }] },
+      textData: { characters: 'a B', characterStyleIDs: [0, 0, 1], styleOverrideTable: [{ styleID: 1, fontSize: 30 }] } } },
   // ---- stroke paints with blend modes ----
   { id: [3, 1], type: 'FRAME', name: 'StrokeBlendBox', parent: [1, 1], pos: '%', w: 40, h: 40, fill: [1, 1, 0] },
   { id: [3, 2], type: 'ROUNDED_RECTANGLE', name: 'TwoStrokes', parent: [3, 1], pos: '!', w: 40, h: 40,
@@ -155,6 +211,72 @@ describe('style ids per code point; emoji sequences', () => {
   });
 });
 
+describe('Auto line height is printed explicitly', () => {
+  it('prints lh-normal with Figma\'s pitch, per range with its own size, without px for another font', () => {
+    const l = lineOf('1:1', 'AutoLh');
+    expect(l).toContain('font=Inter/20/lh-normal(24px)');
+    expect(l).toContain('runs[6-9 "BIG" size=30 lh-normal(36px); 10-15 "Other" font=Roboto lh-normal]');
+  });
+  it('prints lh-normal without px when the natural line height is unknown; multipliers stay', () => {
+    expect(lineOf('1:1', 'AutoLhUnknown')).toMatch(/font=(?:[^ ]*\/)?20\/lh-normal( |$)/);
+    expect(lineOf('1:1', 'FixedLh')).toMatch(/\/lh1\.5( |\/|$)/);
+  });
+});
+
+describe('Auto line height: which pitch', () => {
+  it('prints Figma\'s saved (unrounded) pitch when the text has one', () => {
+    expect(styles('5:1').font.lpx).toBe(65.625);
+    expect(lineOf('1:1', 'LegacyPitch')).toContain('/lh-normal(65.63px)');
+  });
+  it('drops the component font\'s metrics when an override changes the family', () => {
+    expect(lineOf('5:4', 'LabelText')).toMatch(/font=Roboto\/21\/lh-normal( |$)/);
+    expect(lineOf('5:2', 'LabelText')).toContain('lh-normal(25px)');
+  });
+  it('uses the font size of the explicit variable mode', () => {
+    expect(lineOf('5:6', 'ModeSized')).toContain('lh-normal(29px)');
+  });
+  it('scales the unscaled pitch with the instance (round(1.17 × 21) × 0.5)', () => {
+    expect(lineOf('5:5', 'LabelText')).toContain('lh-normal(12.5px)');
+  });
+});
+
+describe('token references with their value', () => {
+  it('prints $name(value): alias chains resolved, lengths in px, explicit mode applied', () => {
+    expect(lineOf('1:1', 'Danger')).toContain('fill=$theme-destructive(#ef4444) r=$radius-lg(8px)');
+    expect(lineOf('6:11', 'DarkDanger')).toContain('fill=$theme-destructive(#f87171)');
+    expect(specOf('6:11')).not.toMatch(/\$[\w-]+\{/);
+  });
+  it('tree/node show the default-mode value', () => {
+    const s = JSON.parse((db().prepare('SELECT styles FROM nodes WHERE id=?').get('6:10') as { styles: string }).styles);
+    expect(stylesStr(s, { nameOf: nameOfFor(db()) })).toContain('fill=$theme-destructive(#ef4444) r=8 vars=radius:$radius-lg(8px)');
+  });
+});
+
+describe('token value resolution edge cases', () => {
+  it('resolves an alias into another collection in that collection\'s default mode', () => {
+    expect(lineOf('1:1', 'Accent')).toContain('fill=$theme-accent(#111111)');
+  });
+  it('prints a plain $name for an alias cycle or a missing target', () => {
+    expect(lineOf('1:1', 'Looped')).toMatch(/fill=\$loop-a( |$)/);
+    expect(lineOf('1:1', 'Ghosted')).toMatch(/fill=\$ghost( |$)/);
+  });
+  it('rejects a saved pitch that does not fit the text\'s own size (one line with a bigger range)', () => {
+    expect(styles('5:9').font.lpx).toBe(36);
+    expect(lineOf('1:1', 'MixedLine')).toContain('/lh-normal(24px)');
+    expect(autoPitch({ nlh: 1.21, s: 20, lpx: 36 })).toBe(24);
+    expect(autoPitch({ nlh: 1.21, s: 20, lpx: 24.5 })).toBe(24.5);
+  });
+});
+
+describe('font units', () => {
+  it('prints letter spacing in px (also in ranges); font size stays a px number, lh a unitless multiplier', () => {
+    const l = lineOf('1:1', 'Tracking');
+    expect(l).toContain('font=Inter/14/w500/lh1.429/ls0.1px');
+    expect(l).toContain('runs[3-5 "cd" ls0.7px]');
+    expect(l).not.toMatch(/ls[\d.]+(?!px)[\/ \]]/);
+  });
+});
+
 describe('stroke paint blend modes', () => {
   it('prints each stroke paint with its blend mode', () => {
     expect(lineOf('3:1', 'TwoStrokes')).toContain('stroke=#ff00ff+#ffff00|multiply/10/inner');
@@ -193,7 +315,7 @@ describe('stroke paint blend modes', () => {
 
 describe('auto layout under an explicit variable mode (gap, padding, size)', () => {
   it('prints the mode values', () => {
-    expect(lineOf('40:32', 'Card loose')).toMatch(/col gap=\$space-gap\{24\} pad=\$space-pad\{20\}/);
+    expect(lineOf('40:32', 'Card loose')).toMatch(/col gap=\$space-gap\(24px\) pad=\$space-pad\(20px\)/);
   });
   it('keeps the saved layout without a mode', () => {
     const svg = render('40:31').svg;

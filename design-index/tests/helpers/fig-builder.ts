@@ -63,7 +63,8 @@ message FontName { string family = 1; string style = 2; string postscript = 3; }
 message TextLine { LineType lineType = 1; uint indentationLevel = 2; }
 message TextData { string characters = 1; TextLine[] lines = 2; uint[] characterStyleIDs = 3; NodeChange[] styleOverrideTable = 4; }
 message FontMeta { FontName key = 1; float fontLineHeight = 2; float fontWeight = 3; }
-message DerivedText { FontMeta[] fontMetaData = 1; }
+message Baseline { float lineHeight = 1; }
+message DerivedText { FontMeta[] fontMetaData = 1; Baseline[] baselines = 2; }
 message ArcData { float startingAngle = 1; float endingAngle = 2; float innerRadius = 3; }
 enum PropField { VISIBLE = 0; TEXT_DATA = 1; OVERRIDDEN_SYMBOL_ID = 2; }
 message PropRef { GUID defID = 1; PropField componentPropNodeField = 2; }
@@ -77,7 +78,7 @@ message Derived { GUIDPath guidPath = 1; Vector size = 2; Matrix transform = 3; 
 message GUIDPath { GUID[] guids = 1; }
 message SymbolData { GUID symbolID = 1; NodeChange[] symbolOverrides = 2; float uniformScaleFactor = 3; }
 message ModeRef { GUID id = 1; string name = 2; }
-message VarValue { Color colorValue = 1; float floatValue = 2; string textValue = 3; }
+message VarValue { Color colorValue = 1; float floatValue = 2; string textValue = 3; VarAlias alias = 4; }
 message VarData { VarValue value = 1; }
 message VarEntry { GUID modeID = 1; VarData variableData = 2; }
 message VarValues { VarEntry[] entries = 1; }
@@ -120,7 +121,7 @@ export interface FigNode {
   extra?: Record<string, unknown>;
   ok?: [number, number]; defs?: { id: [number, number]; init?: PV; name?: string; parent?: [number, number]; type?: string }[]; refs?: { def: [number, number]; field: 'VISIBLE' | 'TEXT_DATA' | 'OVERRIDDEN_SYMBOL_ID' }[]; assign?: Assign[]; derived?: { path: [number, number][]; w: number; h: number; x: number; y: number; noStroke?: boolean; extra?: Record<string, unknown> }[];
   radius?: { cornerRadius?: number; tl?: number; indep?: boolean }; stroke?: { w: number; top?: number; indep?: boolean }; visibleFlag?: boolean;
-  modes?: { id: [number, number]; name: string }[]; key?: string; setKey?: string; varType?: 'COLOR' | 'FLOAT' | 'STRING'; values?: { mode: [number, number]; color?: [number, number, number, number]; num?: number; str?: string }[];
+  modes?: { id: [number, number]; name: string }[]; key?: string; setKey?: string; varType?: 'COLOR' | 'FLOAT' | 'STRING'; values?: { mode: [number, number]; color?: [number, number, number, number]; num?: number; str?: string; alias?: string }[];
 }
 
 export const g = (a: [number, number]) => ({ sessionID: a[0], localID: a[1] });
@@ -169,7 +170,7 @@ export function buildFig(nodes: FigNode[], opts: { version?: number; blobs?: Uin
       symbolDescription: n.desc, key: n.key,
       variableSetID: n.setKey ? { assetRef: { key: n.setKey } } : undefined, variableResolvedType: n.varType,
       variableSetModes: n.modes?.map((m) => ({ id: g(m.id), name: m.name })),
-      variableDataValues: n.values ? { entries: n.values.map((v) => ({ modeID: g(v.mode), variableData: { value: v.color ? { colorValue: { r: v.color[0], g: v.color[1], b: v.color[2], a: v.color[3] } } : v.str !== undefined ? { textValue: v.str } : { floatValue: v.num } } })) } : undefined,
+      variableDataValues: n.values ? { entries: n.values.map((v) => ({ modeID: g(v.mode), variableData: { value: v.alias ? { alias: { assetRef: { key: v.alias } } } : v.color ? { colorValue: { r: v.color[0], g: v.color[1], b: v.color[2], a: v.color[3] } } : v.str !== undefined ? { textValue: v.str } : { floatValue: v.num } } })) } : undefined,
       ...n.extra,
     })),
     blobs: (opts.blobs ?? []).map((bytes) => ({ bytes })),

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DatabaseSync } from './sqlite.js';
 import type { Layout, Paint, Styles, TextRun } from './model.js';
-import { safeJson } from './output.js';
+import { autoPitch, safeJson } from './output.js';
 import { TokenIndex } from './tokens.js';
 import { Evaluator, TooBig, type VNode } from './instances.js';
 import { parseGeometry } from './parsers/fig-convert.js';
@@ -136,7 +136,8 @@ export function casedWithMap(source: string, base: string | undefined, runs: { i
 function linePx(f: NonNullable<Styles['font']>, fs: number, fallback: number): number {
   if (typeof f.lh === 'number') return f.lh * fs;
   if (typeof f.lh === 'string' && /px$/.test(f.lh)) return parseFloat(f.lh) || fallback * fs;
-  if (typeof f.nlh === 'number') return Math.round(f.nlh * fs);
+  const p = autoPitch(f, fs);
+  if (p !== undefined) return p;
   return fallback * fs;
 }
 const isBold = (s: Styles) => Number(s.font?.w) >= 600 || String(s.font?.w) === 'bold';
@@ -250,7 +251,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const sw = num('stroke-weight');
     if (sw !== undefined && s.stroke) { s.stroke = { ...s.stroke, w: sw }; changed = true; }
     const fs = num('font-size');
-    if (fs !== undefined && s.font) { s.font = { ...s.font, s: fs }; changed = true; }
+    if (fs !== undefined && s.font) { s.font = { ...s.font, s: fs }; delete s.font.lpx; changed = true; }
     if (changed) { r.s = s; notes.add('Numbers bound to variables drawn with their value under the explicit variable mode'); }
     // auto-layout numbers and sizes: where the mode value differs from the saved one, the saved layout shows another mode
     // (instance content keeps its component's default-mode layout); fig re-lays out the container below

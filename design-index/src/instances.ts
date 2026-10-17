@@ -510,6 +510,9 @@ export function scaleStyles(st: Styles, f: number): Styles {
   const font = (x: Partial<NonNullable<Styles['font']>> | undefined) => {
     if (!x) return x;
     const y = { ...x };
+    // Figma scales the unscaled pitch (saved, or round(natural × size)) with the instance
+    const pitch = typeof y.lpx === 'number' ? y.lpx : typeof y.nlh === 'number' && typeof y.s === 'number' && y.lh == null ? Math.round(y.nlh * y.s) : undefined;
+    if (pitch !== undefined) y.lpx = rs(pitch, f);
     if (typeof y.s === 'number') y.s = rs(y.s, f);
     if (typeof y.ls === 'number') y.ls = rs(y.ls, f);
     if (typeof y.lh === 'string' && y.lh.endsWith('px')) y.lh = `${rs(parseFloat(y.lh), f)}px`;

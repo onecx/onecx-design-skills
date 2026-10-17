@@ -50,6 +50,8 @@ export interface Styles {
     trunc?: boolean | number;
     /** the font's natural line height as a multiplier of the font size (fig: derivedTextData), used to draw "normal" */
     nlh?: number;
+    /** Figma's saved line pitch in px under an Auto line height (derivedTextData baselines; legacy texts keep it unrounded) */
+    lpx?: number;
     /** text box trim (Figma leadingTrim): cap = from cap height to baseline */
     trim?: string;
   };

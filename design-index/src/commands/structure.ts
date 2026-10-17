@@ -15,11 +15,12 @@ export interface NodeRec {
 const compCache = new WeakMap<DatabaseSync, Map<string, string>>();
 const tokCache = new WeakMap<DatabaseSync, TokenIndex>();
 /** token display name for a bound variable id (cached per database) */
-export function nameOfFor(db: DatabaseSync): (v: string) => string {
+export function nameOfFor(db: DatabaseSync): (v: string, key?: string) => string {
   let t = tokCache.get(db);
   if (!t) { t = new TokenIndex(db); tokCache.set(db, t); }
   const ti = t;
-  return (v) => ti.nameFor(v);
+  // `name(value)` without the `$` (the caller adds it): the token's default-mode value, lengths in px
+  return (v, key) => ti.ref(v, undefined, key).slice(1);
 }
 
 /** "Button[State=Hover,Size=L]" for variants, plain name otherwise. */
@@ -50,7 +51,7 @@ export function nodeLine(db: DatabaseSync, n: NodeRec, withStyle = true): string
   if (ls) parts.push(ls);
   if (n.component_ref) parts.push(`→${compLabel(db, n.component_ref)}`);
   if (n.text) parts.push(`text=${q(n.text, 50)}`);
-  if (withStyle) { const st = stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db) }); if (st) parts.push(st); }
+  if (withStyle) { const st = stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db), fig: getMeta(db, 'format') === 'fig' }); if (st) parts.push(st); }
   if (!n.visible) parts.push('(hidden)');
   return parts.join(' ');
 }
@@ -182,7 +183,7 @@ export function nodeDetail(db: DatabaseSync, out: Out, id: string): void {
   const l = safeJson<Layout>(n.layout);
   if (l) out.add(`layout: ${layoutStr(l) || '-'}  size: ${sizeStr(n.w, n.h, l) || '-'}`);
   const s = safeJson<Styles>(n.styles);
-  if (s) out.add(`styles: ${stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db) })}`);
+  if (s) out.add(`styles: ${stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db), fig: getMeta(db, 'format') === 'fig' })}`);
   if (n.text) out.add(`text: ${JSON.stringify(n.text.length > 600 ? n.text.slice(0, 600) + '…' : n.text)}`);
   if (n.component_ref) out.add(`instance of: ${compLabel(db, n.component_ref)} (${n.component_ref})`);
   const comp = db.prepare('SELECT * FROM components WHERE id=?').get(id) as { description: string; variant: string; props: string; instances: number } | undefined;

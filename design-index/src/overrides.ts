@@ -35,6 +35,9 @@ export function mergeStyles(a: Styles, b: Styles): Styles {
   const out: Styles = { ...a, ...b };
   if (a.font || b.font) {
     const f: Record<string, unknown> = { ...a.font, ...b.font };
+    // the target's saved metrics belong to its own font and size: another family drops them unless the override brings its own
+    if (b.font?.f != null && a.font?.f != null && b.font.f !== a.font.f) { if (b.font.nlh === undefined) delete f.nlh; if (b.font.lpx === undefined) delete f.lpx; }
+    else if (b.font?.s != null && b.font.s !== a.font?.s && b.font.lpx === undefined) delete f.lpx;
     for (const k of Object.keys(f)) if (f[k] === null || f[k] === '') delete f[k];
     out.font = f as Styles['font'];
   }
