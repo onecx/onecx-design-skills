@@ -1,7 +1,7 @@
 import type { DatabaseSync } from '../sqlite.js';
 import path from 'node:path';
 import type { Layout, Styles } from '../model.js';
-import { layoutStr, Out, q, safeJson, sizeStr, stylesStr } from '../output.js';
+import { layoutStr, opSuffix, Out, q, safeJson, sizeStr, stylesStr } from '../output.js';
 import { getMeta } from '../db.js';
 import { fmtBytes } from '../util.js';
 import { TokenIndex } from '../tokens.js';
@@ -15,11 +15,13 @@ export interface NodeRec {
 const compCache = new WeakMap<DatabaseSync, Map<string, string>>();
 const tokCache = new WeakMap<DatabaseSync, TokenIndex>();
 /** token display name for a bound variable id (cached per database) */
-export function nameOfFor(db: DatabaseSync): (v: string) => string {
+export function nameOfFor(db: DatabaseSync): (v: string, key?: string, saved?: string) => string {
   let t = tokCache.get(db);
   if (!t) { t = new TokenIndex(db); tokCache.set(db, t); }
   const ti = t;
-  return (v) => ti.nameFor(v);
+  // `name(value)` without the `$` (the caller adds it): the token's default-mode value, lengths in px
+  // `saved` = the saved colour of a bound paint: its extra paint opacity is appended as `/opA`
+  return (v, key, saved) => ti.ref(v, undefined, key).slice(1) + (saved ? opSuffix(ti.paintOpacity(v, saved)) : '');
 }
 
 /** "Button[State=Hover,Size=L]" for variants, plain name otherwise. */
@@ -50,7 +52,7 @@ export function nodeLine(db: DatabaseSync, n: NodeRec, withStyle = true): string
   if (ls) parts.push(ls);
   if (n.component_ref) parts.push(`→${compLabel(db, n.component_ref)}`);
   if (n.text) parts.push(`text=${q(n.text, 50)}`);
-  if (withStyle) { const st = stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db) }); if (st) parts.push(st); }
+  if (withStyle) { const st = stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db), fig: getMeta(db, 'format') === 'fig' }); if (st) parts.push(st); }
   if (!n.visible) parts.push('(hidden)');
   return parts.join(' ');
 }
@@ -173,8 +175,37 @@ export function search(db: DatabaseSync, out: Out, text: string, type: string | 
 }
 
 // ---- node ---------------------------------------------------------------------------------------
+/** chars per token of the output estimate (util.estTokens) */
+const CPT = 4;
+/**
+ * Field limits of `node` derived from the token budget: the 0.1.x values at the default 2,000 tokens, proportional above and below
+ * (a quarter at least); `raw` takes most of the budget above the default.
+ */
+export function nodeLimits(budget: number): { text: number; props: number; desc: number; raw: number; inter: number; notes: number; note: number } {
+  const k = budget / 2000;
+  const lim = (base: number) => Math.max(Math.ceil(base / 4), Math.round(base * k));
+  return {
+    text: lim(600), props: lim(300), desc: lim(160), inter: lim(8), notes: lim(5), note: lim(300),
+    raw: budget <= 2000 ? lim(700) : 700 + Math.floor((budget - 2000) * CPT * 0.8),
+  };
+}
+/** smallest budget (rounded up to 1,000) whose limit for a field shows `len` items/chars in full */
+export function budgetFor(len: number, field: keyof ReturnType<typeof nodeLimits>): number {
+  let b = 2000;
+  while (nodeLimits(b)[field] < len && b < 1e7) b += 1000;
+  return b;
+}
+
 export function nodeDetail(db: DatabaseSync, out: Out, id: string): void {
   const n = requireNode(db, id);
+  const L = nodeLimits(out.opts.maxTokens);
+  const cut: string[] = [];
+  /** `s` when it fits `limit`, else its first `keep` chars and `…`; a cut is named in a hint with a budget that shows it in full */
+  const clip = (s: string, limit: number, field: keyof typeof L, name: string, keep = limit): string => {
+    if (s.length <= limit) return s;
+    cut.push(`${name} truncated (${keep} of ${s.length} chars): node ${id} --max-tokens ${budgetFor(s.length, field)}`);
+    return s.slice(0, keep) + '…';
+  };
   const anc = ancestors(db, id).map((a) => `${a.name || a.type}(${a.id})`);
   out.head(`${n.id} ${n.type} ${q(n.name, 80)} page=${n.page} depth=${n.depth} ord=${n.ord}${n.visible ? '' : ' HIDDEN'}`);
   if (anc.length) out.add(`path: ${anc.join(' › ')}`);
@@ -182,18 +213,26 @@ export function nodeDetail(db: DatabaseSync, out: Out, id: string): void {
   const l = safeJson<Layout>(n.layout);
   if (l) out.add(`layout: ${layoutStr(l) || '-'}  size: ${sizeStr(n.w, n.h, l) || '-'}`);
   const s = safeJson<Styles>(n.styles);
-  if (s) out.add(`styles: ${stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db) })}`);
-  if (n.text) out.add(`text: ${JSON.stringify(n.text.length > 600 ? n.text.slice(0, 600) + '…' : n.text)}`);
+  if (s) out.add(`styles: ${stylesStr(s, { isText: n.type === 'text', nameOf: nameOfFor(db), fig: getMeta(db, 'format') === 'fig' })}`);
+  if (n.text) {
+    out.add(`text: ${JSON.stringify(clip(n.text, L.text, 'text', 'text'))}`);
+  }
   if (n.component_ref) out.add(`instance of: ${compLabel(db, n.component_ref)} (${n.component_ref})`);
   const comp = db.prepare('SELECT * FROM components WHERE id=?').get(id) as { description: string; variant: string; props: string; instances: number } | undefined;
-  if (comp) out.add(`component: ${comp.instances} instances${comp.description ? ` · ${q(comp.description, 160)}` : ''}${comp.variant ? ` · variant ${comp.variant}` : ''}${comp.props ? ` · props ${comp.props.slice(0, 300)}` : ''}`);
+  if (comp) {
+    const desc = comp.description ? comp.description.replace(/\s+/g, ' ').trim() : '';
+    out.add(`component: ${comp.instances} instances${desc ? ` · ${JSON.stringify(clip(desc, L.desc, 'desc', 'description', L.desc - 1))}` : ''}${comp.variant ? ` · variant ${comp.variant}` : ''}${comp.props ? ` · props ${clip(comp.props, L.props, 'props', 'props')}` : ''}`);
+  }
   const raw = safeJson<Record<string, unknown>>(n.raw);
-  if (raw) out.add(`raw: ${JSON.stringify(raw).slice(0, 700)}`);
+  if (raw) out.add(`raw: ${clip(JSON.stringify(raw), L.raw, 'raw', 'raw')}`);
   const inter = db.prepare('SELECT trigger,action,target_id,detail FROM interactions WHERE node_id=?').all(id) as { trigger: string; action: string; target_id: string | null; detail: string | null }[];
-  for (const i of inter.slice(0, 8)) out.add(`interaction: ${i.trigger} → ${i.action}${i.target_id ? ' ' + i.target_id : ''}${i.detail ? ' ' + i.detail : ''}`);
+  for (const i of inter.slice(0, L.inter)) out.add(`interaction: ${i.trigger} → ${i.action}${i.target_id ? ' ' + i.target_id : ''}${i.detail ? ' ' + i.detail : ''}`);
+  if (inter.length > L.inter) cut.push(`${inter.length - L.inter} more interactions: node ${id} --max-tokens ${budgetFor(inter.length, 'inter')}`);
   const notes = db.prepare('SELECT kind,text FROM notes WHERE node_id=?').all(id) as { kind: string; text: string }[];
-  for (const t of notes.slice(0, 5)) out.add(`note(${t.kind}): ${q(t.text, 300)}`);
+  for (const t of notes.slice(0, L.notes)) out.add(`note(${t.kind}): ${JSON.stringify(clip(t.text.replace(/\s+/g, ' ').trim(), L.note, 'note', 'note', L.note - 1))}`);
+  if (notes.length > L.notes) cut.push(`${notes.length - L.notes} more notes: node ${id} --max-tokens ${budgetFor(notes.length, 'notes')}`);
   const g = db.prepare('SELECT length(data) len FROM geometry WHERE node_id=?').get(id) as { len: number } | undefined;
   if (g) out.add(`vector geometry: ${g.len} chars (assets export ${id})`);
+  for (const c of cut) out.hint(c);
   out.hint(n.nchild ? `\`tree ${id} --depth 2\` for children, \`spec ${id}\` for the implementation spec.` : `\`spec ${id}\` for the spec.`);
 }

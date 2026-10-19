@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import type { DatabaseSync } from './sqlite.js';
 import { openIndex, type Opened } from './cache.js';
 import { ingest } from './ingest.js';
@@ -14,27 +14,50 @@ import { nodeDetail, overview, search, tree } from './commands/structure.js';
 process.removeAllListeners('warning');
 process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') process.stderr.write(`${w.name}: ${w.message}\n`); });
 
+/** `--max-tokens` value: a positive integer, else a usage error (exit code 1) */
+export function parseMaxTokens(v: string): number {
+  const n = Number(v);
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(n) || n <= 0) throw new InvalidArgumentError('must be a positive integer, e.g. --max-tokens 4000');
+  return n;
+}
+
+// The common options (--file, --json, --max-tokens) work before and after the command name: the root program defines them too
+// (options before the command), each command its own (options after it). With positional options the root does not swallow
+// options written after the command; the action merges both (the command's own value wins).
 const program = new Command('design-query')
   .description('Queries against an index of .pen/.fig design files (small, token-limited output)')
-  .version('0.1.0')
-  .showHelpAfterError();
+  .version('0.1.5')
+  .enablePositionalOptions()
+  .showHelpAfterError()
+  .option('--file <path>', 'design file (default: most recently indexed); the common options may also follow the command')
+  .option('--json', 'machine-readable output')
+  .option('--max-tokens <n>', 'token limit of the output (default: per command)', parseMaxTokens);
 
-interface Common { file?: string; json?: boolean; maxTokens?: string }
+interface Common { file?: string; json?: boolean; maxTokens?: number }
 
 function common(c: Command, defaultTokens = 2000): Command {
   return c
     .option('--file <path>', 'design file (default: most recently indexed)')
     .option('--json', 'machine-readable output')
-    .option('--max-tokens <n>', `token limit of the output (default ${defaultTokens})`);
+    .option('--max-tokens <n>', `token limit of the output (default ${defaultTokens})`, parseMaxTokens);
+}
+
+/** options of a command merged with those of its parents (root first; a value set closer to the command wins) */
+function mergedOpts<T>(cmd: Command): T {
+  const chain: Command[] = [];
+  for (let c: Command | null = cmd; c; c = c.parent) chain.unshift(c);
+  const out: Record<string, unknown> = {};
+  for (const c of chain) for (const [k, v] of Object.entries(c.opts())) if (v !== undefined) out[k] = v;
+  return out as T;
 }
 
 function action<T extends Common>(defaultTokens: number, fn: (ix: Opened, out: Out, opts: T, ...args: any[]) => void | Promise<void>) {
   return async (...a: any[]) => {
     const cmd = a[a.length - 1] as Command;
-    const opts = cmd.opts<T>();
+    const opts = mergedOpts<T>(cmd);
     try {
       const ix = openIndex(opts.file);
-      const out = new Out({ maxTokens: opts.maxTokens ? Number(opts.maxTokens) : defaultTokens, json: !!opts.json });
+      const out = new Out({ maxTokens: opts.maxTokens ?? defaultTokens, json: !!opts.json });
       await fn(ix, out, opts, ...a.slice(0, -2));
       out.print();
       ix.db.close();
@@ -51,7 +74,14 @@ program.command('ingest <file>')
   .description('Index a file (format is detected, result is cached; already indexed files are skipped)')
   .option('--force', 're-index even if cached')
   .option('--json', 'machine-readable output')
-  .action(async (datei: string, opts: { force?: boolean; json?: boolean }) => {
+  .action(async (datei: string, _o: unknown, cmd: Command) => {
+    const opts = mergedOpts<{ force?: boolean; json?: boolean; file?: string; maxTokens?: number }>(cmd);
+    // the root's --file/--max-tokens would be ignored here (after `ingest` they are unknown options): reject them the same way
+    if (opts.file !== undefined || opts.maxTokens !== undefined) {
+      process.stderr.write(`error: ingest takes the file as its argument and accepts only --force and --json (got ${opts.file !== undefined ? '--file' : '--max-tokens'}); e.g. design-query ingest <file>\n`);
+      process.exitCode = 1;
+      return;
+    }
     try {
       const r = await ingest(datei, { force: opts.force });
       if (opts.json) process.stdout.write(JSON.stringify(r) + '\n');

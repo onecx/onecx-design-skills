@@ -40,7 +40,27 @@ export function tokenNames(tokens: TokenRec[]): Map<string, string> {
   return out;
 }
 
+/** Styles.vars fields whose values are lengths in px */
+const PX_KEYS = /^(gap|row-gap|pad-|radius|r-|width|height|min-|max-|font-size|line-height|letter-spacing|stroke-weight|border-|paragraph-|grid-)/;
+
 export const isAlias = (v: unknown): v is string => typeof v === 'string' && v.startsWith('alias:');
+
+/**
+ * The explicit mode in effect for a variable: the innermost entry of `modes` ("Collection=Mode", outermost first) that names the
+ * variable's own collection and one of its modes. Mode names alone are not unique across collections ("Dark" in two themes).
+ * Bare entries (no "=") match by mode name only.
+ */
+export function pickMode(modes: string[] | undefined, collection: string, values: Record<string, unknown>): string | undefined {
+  if (!modes?.length) return undefined;
+  for (let i = modes.length - 1; i >= 0; i--) {
+    const m = modes[i];
+    const at = m.indexOf('=');
+    if (at < 0) { if (m in values) return m; continue; }
+    const name = m.slice(at + 1);
+    if (m.slice(0, at) === collection && name in values) return name;
+  }
+  return undefined;
+}
 
 /** Resolves aliases (alias:<id>) to a concrete value for a mode; guards against cycles. */
 export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: string, depth = 0, modes?: string[]): unknown {
@@ -49,9 +69,10 @@ export function resolveValue(byId: Map<string, TokenRec>, t: TokenRec, mode: str
   if (isAlias(v) && depth < 10) {
     const target = byId.get(v.slice(6));
     if (!target) return v;
-    // an alias target of another collection resolves in that collection's explicit mode if the context sets one
-    const m = modes ? [...modes].reverse().find((x) => x in target.values) : undefined;
-    return resolveValue(byId, target, m ?? mode, depth + 1, modes);
+    // an alias target of another collection resolves in that collection's explicit mode if the context sets one, else in its
+    // default (first) mode; within the same collection the mode carries over
+    const m = pickMode(modes, target.collection, target.values);
+    return resolveValue(byId, target, m ?? (target.collection === t.collection ? mode : Object.keys(target.values)[0] ?? mode), depth + 1, modes);
   }
   return v;
 }
@@ -89,10 +110,64 @@ export class TokenIndex {
       const all = modesOf(this.tokens);
       this.mode = all.includes('default') ? 'default' : all.find((m) => /light/i.test(m)) ?? all[0];
     }
-    // the innermost explicit mode that this variable's collection defines wins
-    const own = modes ? [...modes].reverse().find((m) => m in t.values) : undefined;
-    const v = resolveValue(this.byId, t, own ?? this.mode, 0, modes);
+    // the innermost explicit mode of this variable's collection wins; without one, the collection's first (default) mode
+    const own = pickMode(modes, t.collection, t.values);
+    const v = resolveValue(this.byId, t, own ?? Object.keys(t.values)[0] ?? this.mode, 0, modes);
     return typeof v === 'string' && v.startsWith('#') ? v : undefined;
+  }
+  /** Concrete value of any token (number, string, color) under the explicit modes (innermost first that the collection defines). */
+  valueOf(ref: string, modes?: string[]): unknown {
+    const t = this.byName.get(ref) ?? this.byId.get(ref);
+    if (!t) return undefined;
+    if (!this.mode) {
+      const all = modesOf(this.tokens);
+      this.mode = all.includes('default') ? 'default' : all.find((m) => /light/i.test(m)) ?? all[0];
+    }
+    const own = pickMode(modes, t.collection, t.values);
+    // without an explicit mode a variable shows its collection's first (default) mode
+    const v = resolveValue(this.byId, t, own ?? Object.keys(t.values)[0] ?? this.mode, 0, modes);
+    return isAlias(v) ? undefined : v;
+  }
+  /** The value a token takes under `modes` when it differs from its default-mode value (else undefined). */
+  modeValue(ref: string, modes?: string[]): unknown {
+    if (!modes?.length) return undefined;
+    const a = this.valueOf(ref, modes), b = this.valueOf(ref);
+    return a !== undefined && a !== b ? a : undefined;
+  }
+  /**
+   * A token reference with its value where it is used: `$name(value)` = use var(--name); here it resolves to value (aliases
+   * followed, explicit modes applied). Lengths (`key` = a Styles.vars field such as gap, pad-top, radius, font-size) get `px`.
+   * Without a concrete value just `$name`. `scale` = accumulated uniform scale of the enclosing instances: a length then prints
+   * `$name(Npx×F=Mpx)` (the token holds N, the scaled instance draws M; CSS: calc(var(--name) * F)).
+   */
+  ref(id: string, modes?: string[], key?: string, scale?: number): string {
+    const name = `$${this.nameFor(id)}`;
+    const v = this.valueOf(id, modes);
+    let s: string;
+    const r3 = (x: number) => Math.round(x * 1000) / 1000;
+    const px = !!key && PX_KEYS.test(key);
+    if (typeof v === 'number' && px && scale !== undefined && Math.abs(scale - 1) > 1e-6) s = `${r3(v)}px×${r3(scale)}=${r3(v * scale)}px`;
+    else if (typeof v === 'number') s = `${r3(v)}${px ? 'px' : ''}`;
+    else if (typeof v === 'string') s = v.length <= 40 && !/[()\s]/.test(v) ? v : JSON.stringify(v.length > 40 ? v.slice(0, 40) + '…' : v);
+    else if (typeof v === 'boolean') s = String(v);
+    else return name;
+    return `${name}(${s})`;
+  }
+  /**
+   * Opacity a bound solid paint adds on top of its colour token: the saved paint colour's alpha (Figma: colour alpha × paint
+   * opacity) over the token's alpha under `modes`. Figma mirrors a colour variable's alpha into the paint opacity when it binds
+   * it, so a plain bound paint gives 1 (undefined); a lower paint opacity gives that factor. A factor above 1 means the file was
+   * saved under another mode than the one in effect here: undefined.
+   */
+  paintOpacity(ref: string, saved: string | undefined, modes?: string[]): number | undefined {
+    const tv = this.colorValue(ref, modes);
+    if (!tv || !saved) return undefined;
+    const alpha = (h: string) => (/^#[0-9a-f]{8}$/i.test(h) ? parseInt(h.slice(7, 9), 16) / 255 : /^#[0-9a-f]{6}$/i.test(h) ? 1 : undefined);
+    const a = alpha(saved), t = alpha(tv);
+    if (a === undefined || !t) return undefined;
+    const f = a / t;
+    // (8-bit alphas: two decimals)
+    return f < 0.98 ? Math.round(f * 100) / 100 : undefined;
   }
   get empty(): boolean { return this.tokens.length === 0; }
   private names?: Map<string, string>;
@@ -104,5 +179,34 @@ export class TokenIndex {
   hexMatch(hex: string): string | undefined {
     const n = this.colorByHex.get(hex);
     return n ? this.nameFor(n) : undefined;
+  }
+}
+
+/** Default-mode value of a variable by id or guid, following aliases (used for text bound to a STRING variable). */
+export class VarLookup {
+  private cache = new Map<string, { v: Record<string, unknown>; c: string } | null>();
+  /** `get` returns the variable's values JSON and its collection name */
+  constructor(private get: (id: string) => { vals: string; collection?: string | null } | undefined) {}
+  private rec(id: string): { v: Record<string, unknown>; c: string } | null {
+    if (!this.cache.has(id)) {
+      const r = this.get(id);
+      const v = safeJson<Record<string, unknown>>(r?.vals);
+      this.cache.set(id, v ? { v, c: r?.collection ?? '' } : null);
+    }
+    return this.cache.get(id) ?? null;
+  }
+  /** `modes` = explicit modes in effect ("Collection=Mode", outermost first): the innermost one of the variable's collection wins. */
+  value(id: string, depth = 0, modes?: string[]): unknown {
+    const r = this.rec(id);
+    if (!r) return undefined;
+    const v = r.v;
+    const m = pickMode(modes, r.c, v);
+    const first = m !== undefined ? v[m] : Object.values(v)[0];
+    if (isAlias(first) && depth < 10) return this.value(first.slice(6), depth + 1, modes);
+    return first;
+  }
+  string(id: string, modes?: string[]): string | undefined {
+    const v = this.value(id, 0, modes);
+    return typeof v === 'string' && !isAlias(v) ? v : undefined;
   }
 }

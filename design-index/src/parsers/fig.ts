@@ -5,9 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import yauzl from 'yauzl';
-import type { Sink } from '../model.js';
 import { AssetWriter } from '../assets.js';
 import { timed } from '../util.js';
+import { safeJson } from '../output.js';
+import type { Sink, Styles } from '../model.js';
+import type { StyleDef, StyleUse } from './fig-convert.js';
+import { applyStyleUse, resolveOverrideStyles } from './fig-styles.js';
+import { VarLookup } from '../tokens.js';
 
 export interface FigOptions {
   file: string; assetsDir: string; sink: Sink;
@@ -119,7 +123,10 @@ export async function parseFig(opts: FigOptions): Promise<void> {
           Atomics.add(ackArr, 0, 1); Atomics.notify(ackArr, 0);
           opts.onPeak?.(process.memoryUsage().rss);
           break;
-        case 'progress': opts.onStage?.('decode', m.frac); opts.onPeak?.(process.memoryUsage().rss); break;
+        case 'progress':
+          opts.onStage?.('decode', m.frac); opts.onPeak?.(process.memoryUsage().rss);
+          if (process.env.DESIGN_INDEX_DEBUG) { const mu = process.memoryUsage(); process.stderr.write(`[mem] ${Math.round(m.frac * 100)}% worker heap ${m.heapMB} MB, main heap ${Math.round(mu.heapUsed / 1e6)} MB, external ${Math.round(mu.external / 1e6)} MB, rss ${Math.round(mu.rss / 1e6)} MB\n`); }
+          break;
         case 'done': finished = true; Atomics.add(ackArr, 0, 1); Atomics.notify(ackArr, 0); resolve(m); break;
         case 'error': finished = true; reject(new Error(m.message)); break;
       }
@@ -157,35 +164,104 @@ export async function parseFig(opts: FigOptions): Promise<void> {
   for (const [id, key, val] of done.fixups) sink.run(`UPDATE nodes SET layout = json_set(COALESCE(layout, '{}'), '$.' || ?, ?) WHERE id = ?`, key, val, id);
   sink.exec('COMMIT');
 
-  // instance property keys (definition ids) -> property names
+  // instance property keys (definition ids) -> property names. Definition ids are not unique in a document (the same id names
+  // different properties of different components): look the id up on the instance's component and its ancestors first.
   const names: Record<string, string> = done.propNames;
-  const inst = sink.query<{ id: string; raw: string }>(`SELECT id, raw FROM nodes WHERE component_ref IS NOT NULL AND raw LIKE '%"props"%'`);
+  sink.exec('CREATE INDEX IF NOT EXISTS idx_propdefs_id ON propdefs(id)');
+  const nameOf = scopedPropNames(sink, names);
+  const inst = sink.query<{ id: string; raw: string; component_ref: string }>(`SELECT id, raw, component_ref FROM nodes WHERE component_ref IS NOT NULL AND raw LIKE '%"props"%'`);
   sink.exec('BEGIN');
   for (const r of inst) {
     const raw = JSON.parse(r.raw);
-    if (raw.props) { raw.pid = raw.props; raw.props = Object.fromEntries(Object.entries(raw.props).map(([k, v]) => [names[k] ?? k, v])); sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id); }
+    if (raw.props) { raw.pid = raw.props; raw.props = Object.fromEntries(Object.entries(raw.props).map(([k, v]) => [nameOf(k, r.component_ref), v])); sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id); }
   }
   sink.exec('COMMIT');
 
-  // overrides that point to a shared text style: copy the style's font values into the override
-  const sf = done.styleFonts as Record<string, Record<string, unknown>>;
-  const withSid = sink.query<{ id: string; raw: string }>(`SELECT id, raw FROM nodes WHERE type = 'instance' AND raw LIKE '%"sid"%'`);
-  sink.exec('BEGIN');
-  for (const r of withSid) {
-    const raw = JSON.parse(r.raw);
-    let changed = false;
-    for (const o of raw.overrides ?? []) {
-      if (!o.sid) continue;
-      const font = sf[o.sid];
-      if (font) { o.st = { ...(o.st ?? {}), font: { ...font, ...(o.st?.font ?? {}) } }; changed = true; }
-      delete o.sid;
+  // shared styles (text/fill/stroke/effect): the style record's values win over the node's inline copies, which are stale caches
+  const defs = done.styleDefs as Record<string, StyleDef>;
+  const uses = done.styleUses as [string, StyleUse][];
+  // layers that some instance detaches from their fill style (override fsid UNSET): only they keep their own paints (`ifill`)
+  const detached = new Set<string>();
+  for (let last = 0; ;) {
+    const b = sink.query<{ rid: number; raw: string }>(`SELECT rowid rid, raw FROM nodes WHERE rowid > ? AND type = 'instance' AND raw LIKE '%"fsid":"UNSET"%' ORDER BY rowid LIMIT 2000`, last);
+    if (!b.length) break;
+    last = b[b.length - 1].rid;
+    for (const r of b) for (const o of (JSON.parse(r.raw).overrides ?? []) as { p: string; fsid?: string }[]) if (o.fsid === 'UNSET') detached.add(o.p.split('/').pop()!);
+  }
+  timed('fig:styles', () => {
+    for (let i = 0; i < uses.length; i += 500) {
+      const chunk = uses.slice(i, i + 500);
+      const rows = sink.query<{ id: string; styles: string | null; raw: string | null }>(`SELECT id, styles, raw FROM nodes WHERE id IN (${chunk.map(() => '?').join(',')})`, ...chunk.map((c) => c[0]));
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      sink.exec('BEGIN');
+      for (const [id, use] of chunk) {
+        const r = byId.get(id);
+        if (!r) continue;
+        const rw = safeJson<Record<string, unknown>>(r.raw);
+        const st = applyStyleUse(safeJson<Styles>(r.styles) ?? {}, rw, use, defs, detached.has(id) || (typeof rw?.ok === 'string' && detached.has(rw.ok)));
+        sink.run('UPDATE nodes SET styles = ? WHERE id = ?', Object.keys(st).length ? JSON.stringify(st) : null, id);
+      }
+      sink.exec('COMMIT');
     }
-    if (changed) sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id);
+  });
+
+  // text bound to a variable shows the variable's value (default mode)
+  const vl = new VarLookup((id) => sink.query<{ vals: string; collection: string }>('SELECT vals, collection FROM variables WHERE id = ? OR guid = ? LIMIT 1', id, id)[0]);
+  sink.exec('BEGIN');
+  for (const [id, v] of done.textVars as [string, string][]) {
+    const t = vl.string(v);
+    if (t !== undefined) sink.run('UPDATE nodes SET text = ? WHERE id = ?', t, id);
   }
   sink.exec('COMMIT');
+
+  // overrides that point to shared styles: copy the style's values into the override (they win over its inline values)
+  let last = 0;
+  for (;;) {
+    const batch = sink.query<{ rid: number; id: string; raw: string }>(`SELECT rowid rid, id, raw FROM nodes WHERE rowid > ? AND type = 'instance' AND raw LIKE '%sid"%' ORDER BY rowid LIMIT 2000`, last);
+    if (!batch.length) break;
+    last = batch[batch.length - 1].rid;
+    sink.exec('BEGIN');
+    for (const r of batch) {
+      const raw = JSON.parse(r.raw);
+      let changed = false;
+      for (const o of raw.overrides ?? []) if (resolveOverrideStyles(o, defs)) changed = true;
+      if (changed) sink.run('UPDATE nodes SET raw = ? WHERE id = ?', JSON.stringify(raw), r.id);
+    }
+    sink.exec('COMMIT');
+  }
 
   const s = done.stats;
+  if (done.colorProfile) sink.meta('color_profile', String(done.colorProfile));
   sink.meta('fig_version', String(s.version));
   sink.meta('fig_canvas_uncompressed_mb', String(s.uncompressedMB));
   sink.meta('fig_worker_heap_mb', String(s.maxHeapMB));
+}
+
+/**
+ * Name of a property definition id as seen from a component: the definition on the component itself or the nearest ancestor that
+ * declares the id (variants inherit from their component set); a nameless stub takes the name of its parent definition.
+ * Falls back to the document-wide first name.
+ */
+export function scopedPropNames(sink: Pick<Sink, 'query'>, global: Record<string, string>): (def: string, component: string | null) => string {
+  const defsC = new Map<string, { owner: string; name: string; parent: string | null }[]>();
+  const parentC = new Map<string, string | null>();
+  const defs = (id: string) => {
+    let d = defsC.get(id);
+    if (!d) { d = sink.query<{ owner: string; name: string; parent: string | null }>('SELECT owner, name, parent FROM propdefs WHERE id = ?', id); defsC.set(id, d); }
+    return d;
+  };
+  const parentOf = (id: string): string | null => {
+    if (!parentC.has(id)) parentC.set(id, sink.query<{ p: string | null }>('SELECT parent_id p FROM nodes WHERE id = ?', id)[0]?.p ?? null);
+    return parentC.get(id) ?? null;
+  };
+  const resolve = (def: string, start: string | null, depth: number): string | undefined => {
+    const cands = defs(def);
+    if (!cands.length || depth > 6) return undefined;
+    let hit = cands.length === 1 ? cands[0] : undefined;
+    for (let o = start, i = 0; !hit && o && i < 40; o = parentOf(o), i++) hit = cands.find((c) => c.owner === o);
+    hit ??= cands.find((c) => c.name) ?? cands[0];
+    if (hit.name) return hit.name;
+    return hit.parent ? resolve(hit.parent, parentOf(hit.owner) ?? hit.owner, depth + 1) : undefined;
+  };
+  return (def, component) => resolve(def, component, 0) ?? global[def] ?? def;
 }

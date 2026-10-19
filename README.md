@@ -72,19 +72,134 @@ Notes
   Exception to be aware of: `screenshot` needs about 1 s (WASM start, fonts).
 
 ## Tests
-`npm test`: 18 vitest tests on small generated fixtures (no client data): comments/unknown fields/unknown node types in .pen, streamed data-URI images, hashing/cache skip,
-sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs.
+`npm test`: vitest tests on small generated fixtures (no client data); with `DESIGN_INDEX_FIXTURES=<folder>` also oracle checks against public real Figma exports
+(`design-index/tests/fixtures/README.md` lists the downloads and licences). Generated-fixture coverage: comments/unknown fields/unknown node types in .pen, streamed data-URI images, hashing/cache skip,
+sibling order, budget truncation, token binding and themes, instance expansion, a synthetic raw `fig-kiwi` file and ZIP, corrupt and untested versions, path blobs,
+and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms)
+and 0.1.4 (mixed text styles and links, uniform instance scale, blend modes, angular/diamond gradients, mask types, Display-P3, explicit modes for numbers/text,
+non-unique property definition ids, blobs before nodes), and 0.1.5 (`tests/fig-limits.test.ts`: gradient/image/emoji text ranges, stroke paint blend modes,
+auto layout under an explicit variable mode; PR review: full radii, stroke-only overrides, scaled instances under modes and their tokens, paint opacity of
+bound colours, differential re-layout, image strokes on lines), `tests/cli.test.ts` (common options before/after the command, `--max-tokens` validation,
+`node` budget).
 Manual runs against real client files (not part of this repository) and the synthetic 100/200/400 MB files: see the table above.
 An end-to-end check implemented four real frames in React and Angular (pixel-identical results, 2.8-11.6 % pixel difference to the offline design render); that material contains client assets and is kept out of this repository.
 
 ## Known limits
 - `screenshot` is an approximation (auto-layout re-solved for .pen, text measured heuristically, icon libraries and WebP are placeholders, hidden items do not reflow in .fig instances).
-- .fig instances from libraries that are not inside the file are drawn as boxes; variant overrides and instance resizing are only partly applied.
+- .fig instances from libraries that are not inside the file are drawn as boxes; instance resizing without Figma's saved layout is not re-laid out.
+- .fig `screenshot` approximations: angular gradients (a fan of wedges), Figma-only blend modes `linear-burn`/`linear-dodge` (drawn as multiply/screen),
+  cap-height trim (cap height taken as 0.7 × font size), a thinner stroke-weight override on an outline icon without a saved outline (drawn at the component weight),
+  emoji (yellow placeholder discs: no colour emoji font offline), vector strokes are centred on the outline (Figma's inside/outside alignment is not applied to paths).
+  Auto layout under an explicit variable mode is re-solved only where the mode changes a bound gap, padding or size, differentially: children move by what
+  the simplified solver predicts from the size/spacing changes, so Figma's saved offsets stay where nothing changed (children keep their saved sizes unless
+  they fill; text is not re-measured; wrapping and grid layouts keep their saved positions; baseline alignment of a child whose own size changes is
+  treated as start; constraints `pin=` are applied to children outside the flow of a resized frame, rotated children by their unrotated box).
+  Display-P3 files: images stay P3.
 - `.pen` schema 2.21 is the documented reference; other versions are read with warnings (2.18 was tested).
 - Heuristics (screen detection, purpose, flows, audit) are guesses and are always marked; they exist to produce questions, not facts.
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
 
 ## Changelog
+- **0.1.5** — the last three `.fig` limits of 0.1.4.
+  - Text ranges with non-solid paints: gradient and image range fills are drawn on the range's `<tspan>` (paint server over the text box) and printed in
+    `runs[…color=linear-gradient(…)]` / `color=img(…)`. Emoji: Figma stores one style entry per emoji with an EMOJI paint and the code points, referred to
+    only by its saved glyphs; the characters are found by their code points (variation selector included) and marked `emoji` in `runs[…]` (`spec`),
+    drawn as a yellow disc instead of a glyph in the text colour (octopus Complex `375:15`, tds-components `1363:4397`). Skin tones, keycaps, tags and
+    ZWJ sequences stay one emoji; a character without emoji presentation (⚠, ©, a digit) counts only with an emoji selector or keycap after it.
+  - Fix: `characterStyleIDs` hold one id per **code point**, not per UTF-16 unit (Complex `375:16`: 11 ids for "👍 Emojito 🤣", 13 units). 0.1.4 read
+    them per UTF-16 unit, which shifted every range after an emoji or other astral character. Ranges are still printed in UTF-16 units of `text=`.
+  - Strokes: every stroke paint is drawn (bottom to top: solid, gradient, image), each with its own blend mode, on rectangles, ellipses, per-side borders, lines
+    and vectors (fig2sketch google_material_design `0:1020`: two gradient strokes, the second soft-light). Before, only the first solid stroke paint was drawn.
+  - Explicit variable modes on layout: a bound `gap`, padding, width/height or min/max size whose mode value differs from the saved one re-lays out that
+    auto-layout container (the pen solver's rules on Figma's saved child sizes; hug sizes recomputed, fill children resized) and its auto-layout ancestors;
+    everything else keeps Figma's saved geometry. `spec` is unchanged (`gap=$token{24}`).
+  - `spec`/`tree`/`node` print Figma's "Auto" line height explicitly as `lh-normal(33px)` (CSS `line-height: normal`; the px value is Figma's computed line pitch: the pitch saved with the text's layout
+    (unrounded on older texts, e.g. 65.63px), else the natural line height × font size as Figma rounds it; plain `lh-normal` when the font's metrics are
+    unknown, e.g. after an override changed the family; .pen texts without a line height print none), also for ranges with their own size or font, under a variable mode's font size and in scaled instances.
+    Before, Auto printed no `lh` at all and a small model guessed `line-height: 1.2` (medium-complex `1:91`: Avenir Next 24, 33 px pitch).
+  - Letter spacing carries its unit everywhere (`spec`, runs, classes, `tree`, `node`): `ls0.1px` (was `ls0.1`, which a small model read as em,
+    about 15× too wide). Line-height and letter-spacing tokens show their px value like every token (`lh$line-height-sm(20px)`). Font size stays a plain px number, `lh1.429` a unitless multiplier (documented in SKILL.md).
+  - Token references carry their value: `fill=$theme-destructive(#ef4444)`, `r=$border-radius-lg(8px)`, `gap=$spacing-2-5(10px)` in `spec`, `tree` and
+    `node` (alias chains resolved; in `spec` under the explicit mode in context, which replaces the `$token{value}` notation of 0.1.2-0.1.4). A small model
+    had guessed hex values for token names whose value sat behind an alias chain in `tokens`. material3 `49823:12508` spec: 12,982 → 13,303 characters
+    (~3,330 tokens); gold-preview `1:1697`: 3,974 characters (~1,000 tokens). `.pen` `$name` references in font fields resolve the same way;
+    an alias into another collection resolves in that collection's default mode unless the context sets one; cycles and missing targets print `$name`.
+  - Auto line height: the px value prefers the pitch Figma saved with the text (legacy texts keep it unrounded: material3 `53379:35518` 65.63px for a
+    197 px three-line box); an override with another font family drops the component font's metrics; a font size under a variable mode and instance
+    scale are taken into account.
+  - Index schema 26 (re-ingest happens automatically).
+  - PR review fixes:
+    - Corner radii: the clamp factors come from the original radii (each corner takes the smaller factor of its two sides, CSS-like). 0.1.5 clamped
+      the radii in place side by side, so a full radius (`999`) on a square drew four different corners instead of a circle (gold-preview `1:3356`:
+      9.5/0.39/0.75/18.5 instead of 14). Affects avatars, pills, badges, toggles in `screenshot`; `spec` prints the token/number as before.
+    - Stroke-only vectors (outline icons) ignore fill overrides (paints, `fill: []`, a fill style), like shared fill styles already did: an outer
+      instance's `fill: []` no longer wipes the colour an inner owner's stroke override gave the check icon (gold-preview `1:3382`, 30 such overrides;
+      nuxtui 13 with non-empty fills).
+    - Scaled instances (`uniformScaleFactor`): the accumulated scale is carried down the evaluated tree. Mode values are multiplied by it before they
+      are compared with the (scaled) saved numbers and before they are drawn, so a scaled instance under a mode is no longer re-laid out with unscaled
+      gaps/paddings/sizes. `spec` prints tokens inside a scaled instance as `$token(8px×0.5=4px)` (token value, scale, drawn value; also font
+      sizes, whose `lh-normal(Npx)` is the scaled Figma pitch), documented in the spec header and SKILL.md. nuxtui/gold-preview specs change accordingly.
+    - Colour-bound paints with their own paint opacity print `$token(#1a1a1a)/op0.12` (CSS `color-mix(…)`) in `spec`, `tree` and `node` and are drawn at
+      that opacity. Figma copies a colour variable's alpha into the paint opacity when it binds it (material3 state layers: token `#1d1b201a`, paint
+      opacity 0.1), so the extra factor is the saved colour's alpha over the token's alpha; a plain bound paint prints no `/op` (gold-preview: 126
+      spec lines with an own paint opacity, e.g. `$theme-accent-red-4(#fecaca)/op0.2`; 35 at `/op0` = invisible paints that 0.1.5 printed as opaque).
+    - Re-layout under an explicit mode is differential: the solver runs on the saved and on the new values and every child moves by the difference,
+      so Figma's saved offsets (baseline alignment, anything the solver does not model) stay where nothing changed and following siblings shift only by
+      size deltas. Overflowing content of a `center`/`end` container gets a negative offset as in Figma; children outside the flow of a resized frame
+      follow their constraints (`MAX`, `CENTER`, `STRETCH`, `SCALE`).
+    - Image and gradient strokes on lines paint over a box at least as thick as the stroke (a horizontal line had `<pattern height="0">`: not drawn).
+    - `.pen` `lineHeight` tokens are multipliers: `lh$lh-body(1.5)` (was `1.5px`) in `spec`, `tree` and `node`.
+    - CLI: `--file`, `--json`, `--max-tokens` work before and after the command (`design-query --max-tokens 6000 node <id>`, also `--max-tokens=N`);
+      `--max-tokens` must be a positive integer (digits only, else a usage error naming the option, exit code 1; `abc`, `0`, `-5` were accepted as
+      NaN/0 budgets); `--file`/`--max-tokens` with `ingest` are rejected in either position. Nested scaled instances print `scale=0.5(total=0.25)`
+      (tokens use the total); full radius tokens (≥ half the short side, e.g. 999) print without `×F`. The differential re-layout computes every
+      shift from the saved position, so a child placed twice (fill width settled after its hug parent grew) is not shifted twice.
+    - `node` honours `--max-tokens`: its field limits (text 600, component props 300, description 160, raw JSON 700 chars, 8 interactions, 5 notes at
+      the default 2,000 tokens) grow with the budget, `raw` takes most of it; a cut field ends in `…` and a hint names the budget that shows it in full
+      (`→ raw truncated (700 of 1391 chars): node 1:1871 --max-tokens 3000`). Before, `--max-tokens 50000` printed the same cut raw JSON, cut mid-object
+      without a hint. `components` and `notes` mark their cut props/descriptions with `…` too.
+- **0.1.4** — the `.fig` findings 0.1.3 left open (same research report).
+  - Mixed text styles: `characterStyleIDs` + `styleOverrideTable` become ranges (`runs[6-9 "big" w700 underline color=… link=…]` in `spec`, one
+    `<tspan>` per range in `screenshot`), including each range's own text/fill style (material3 link ranges are purple via "M3/sys/light/primary",
+    open-peeps headings bold). Hyperlinks per text and per range (`link=<url>` / `link=#<node-id>`); `leadingTrim: CAP_HEIGHT` → `trim=cap`.
+  - Instances: `uniformScaleFactor` scales the instance content (sizes, positions, strokes, radii, effects, font sizes, gaps, paddings) before Figma's
+    saved derived data; property-definition ids, which are not unique in a document, are resolved within the component's own ancestry (defaults and
+    property names); bound texts and numbers resolve under the nearest explicit variable mode (`r=$radius{12}`, also inside instances).
+  - Paints: layer and paint blend modes (`blend=multiply`, `paint|multiply`, drawn with `mix-blend-mode`); `stackReverseZIndex` paint order (`z-reverse`);
+    angular gradients drawn as a sweep from the first handle (clockwise) and diamond gradients as L1 bands (`conic-gradient(…)` / `diamond-gradient(…)` in `spec`).
+  - Masks: OUTLINE (shape only) and LUMINANCE (luminance × alpha) besides ALPHA; frame clips inside a mask are drawn as pattern fills (resvg dropped clipped
+    layers whose content reaches far outside the canvas).
+  - Display-P3 documents: colours are converted to sRGB everywhere (hex, tokens, rendering; embedded images stay P3); `spec`, `summary` and `tokens` say so.
+  - Scaled instances print `scale=F` (values below are already scaled). Explicit variable modes match by collection and mode name.
+  - Kiwi: geometry blobs that come before the nodes in the message are read in a second pass. An instance that detaches a fill style without paints of
+    its own shows the layer's own paints; a heavier stroke-weight override on an outline icon without a saved outline widens the outline.
+  - Index schema 24 (re-ingest happens automatically). nuxtui (82 MB) ingest unchanged: 37-39 s, peak 1.25-1.26 GB (0.1.3: 38 s, 1.44 GB).
+- **0.1.3** — `.fig` field semantics checked against what Figma itself saved in 31 real files (laid-out sizes, saved glyph fonts, outlines); see the research report referenced in the PR.
+  - Auto layout: a missing `stackPrimarySizing` means **hug** (hug buttons/chips were reported fixed); missing right/bottom padding is 0 (was mirrored);
+    `SPACE_EVENLY` is Figma's space-between (`jc=between`, gap ignored, a single child is centred); `SPACE_AROUND`/`SPACE_EVENLY_CSS` → `around`/`evenly`;
+    `GRID` frames are `grid` (children keep their saved positions) instead of a column.
+  - Text: line height `{100, PERCENT}` is the font's normal line height (no `lh`, was `lh1`), `RAW` is a multiplier (was dropped), other percentages are
+    relative to the font's natural height. Text case, vertical alignment, truncation (`truncate lines=N`), list markers (`list=`) are printed; "Italic" is weight 400;
+    Figma's saved font weight wins.
+  - Shared styles: `styleIdForText/Fill/StrokeFill/Effect` are resolved on every node and override (the style wins over stale inline values; style names are
+    printed as `styles{…}`). Example: material3 texts drawn in Roboto were reported as "Google Sans Text".
+  - Instance overrides: every override with a rendering field is kept (size-only, fill/stroke style swaps, stroke weight/align/dash, border sides, per-corner radii,
+    opacity, effects, text fields, auto-layout fields, variable bindings); absent fields inherit. A stroke colour override on an outline icon recolours the outline
+    (was drawn in the component colour); saved instance outlines are used unscaled, including stroke outlines.
+  - Variable bindings on numbers and text (`variableConsumptionMap` + `parameterConsumptionMap`): `gap=$token`, `pad=$token`, `r=$token`, font tokens, `width=$…`;
+    text bound to a variable shows the variable's value (binding beats stale literal overrides, a bare entry clears it). Component-property refs and defaults of newer
+    files (`PROP_REF`, `varValue`) are read; slot content is expanded.
+  - Corners: the independent flag decides (absent corner = 0); no `r=` on vectors. Groups (`FRAME` + `resizeToFit`) are `group` and never clip.
+    Masks are marked (`mask`) and clip the following siblings in `screenshot`. Mirrored nodes keep their matrix (`flip=x|y`, `visual@…`); `rot` is documented
+    (counter-clockwise about the top-left origin); rotated vectors export inside their bounds. Constraints of absolutely positioned layers are printed (`pin=…`).
+  - Renderer/spec: per-region vector fills and winding rules, ellipse arcs and polygon counts from Figma's outlines, gradient direction and stops as CSS,
+    image crop (Kiwi `STRETCH`) and image opacity, dash patterns; unknown effect types (noise, grain, …) are ignored instead of becoming a blur; slices are
+    not listed; text on a path is extracted; `fig-deck` files are accepted (with a warning) and the header versions decoded in the real-file checks (1, 2, 3, 4, 10, 15, 20, 25, 48, 63, 80, 87, 101, 106) no longer warn; other versions still do.
+  - Tests: synthetic fixtures now use Figma's own field names and omissions (`tests/fig-semantics.test.ts`); optional oracle checks against real exports
+    (`tests/real-files.test.ts`, download list in `design-index/tests/fixtures/README.md`; no `.fig` file is committed).
+  - nuxtui (82 MB, 313k nodes): ingest 29–34 s → 34–38 s, peak RSS 1.21 GB → 1.25–1.48 GB (run-to-run spread; worker heap at end of stream 290–470 MB). The extra work is the
+    style/variable resolution after the stream; second-pass statements are now prepared once.
+  - Index schema version 23: re-run `ingest --force` on existing caches.
 - **0.1.2**
   - `.fig` corner radius: per-corner values without `cornerRadius` and without the "independent" flag are not drawn (Figma shows them square; 369 nodes in the test export, all 100). Fixes pill-shaped buttons that are rectangular in Figma.
   - `.fig` strokes: per-side widths are read from `borderTopWeight…` / `borderStrokeWeightsIndependent` (was read from wrong field names, which drew a box on all sides). An occurrence whose saved stroke outline is empty has no stroke.

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AssetRow, ComponentRow, DerivedRow, InteractionRow, NodeRow, NoteRow, PropDefRow, Sink, VarModeRow, VariableRow } from './model.js';
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 26;
 
 const SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
@@ -29,7 +29,7 @@ CREATE TABLE screens(
   group_key TEXT, state_hint TEXT, device TEXT, texts TEXT, n_nodes INTEGER, board_name TEXT, n_inputs INTEGER, n_rows INTEGER
 );
 CREATE TABLE propdefs(owner TEXT, id TEXT, name TEXT, type TEXT, initial TEXT, parent TEXT);
-CREATE TABLE derived(inst TEXT, p TEXT, w REAL, h REAL, x REAL, y REAL, geom TEXT, ns INTEGER);
+CREATE TABLE derived(inst TEXT, p TEXT, w REAL, h REAL, x REAL, y REAL, geom TEXT, ns INTEGER, sg TEXT);
 CREATE TABLE varmodes(set_id TEXT, set_key TEXT, set_name TEXT, mode_id TEXT, mode_name TEXT);
 CREATE TABLE edges(src TEXT, dst TEXT, trigger TEXT, action TEXT, via TEXT);
 CREATE TABLE findings(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, severity INTEGER, node_id TEXT, page INTEGER, msg TEXT);
@@ -129,7 +129,7 @@ export class IndexWriter implements Sink {
     this.tx(() => {
       for (const [id, data] of geoms) this.stmtGeom.run(id, data);
       if (pdefs.length) { const st = this.db.prepare('INSERT INTO propdefs(owner,id,name,type,initial,parent) VALUES(?,?,?,?,?,?)'); for (const r of pdefs) st.run(r.owner, r.id, r.name, r.type, JSON.stringify(r.initial ?? null), r.parent); }
-      if (derivs.length) { const st = this.db.prepare('INSERT INTO derived(inst,p,w,h,x,y,geom,ns) VALUES(?,?,?,?,?,?,?,?)'); for (const r of derivs) st.run(r.inst, r.p, r.w ?? null, r.h ?? null, r.x ?? null, r.y ?? null, r.geom ?? null, r.ns ? 1 : 0); }
+      if (derivs.length) { const st = this.db.prepare('INSERT INTO derived(inst,p,w,h,x,y,geom,ns,sg) VALUES(?,?,?,?,?,?,?,?,?)'); for (const r of derivs) st.run(r.inst, r.p, r.w ?? null, r.h ?? null, r.x ?? null, r.y ?? null, r.geom ?? null, r.ns ? 1 : 0, r.sg ?? null); }
       for (const r of rows) {
         this.stmtNode.run(
           r.id, r.parent_id, r.page, r.type, r.name, r.depth, r.ord, r.x, r.y, r.w, r.h,
@@ -172,13 +172,21 @@ export class IndexWriter implements Sink {
     this.flush();
     this.db.exec(sql);
   }
+  // statements are cached by their SQL text: second-pass loops run the same statement many thousand times, and every
+  // un-finalized prepared statement holds native memory until it is garbage-collected
+  private cached = new Map<string, StatementSync>();
+  private stmt(sql: string): StatementSync {
+    let st = this.cached.get(sql);
+    if (!st) { st = this.db.prepare(sql); if (this.cached.size < 200) this.cached.set(sql, st); }
+    return st;
+  }
   query<T = unknown>(sql: string, ...a: any[]): T[] {
     this.flush();
-    return this.db.prepare(sql).all(...a) as T[];
+    return this.stmt(sql).all(...a) as T[];
   }
   run(sql: string, ...a: any[]): void {
     this.flush();
-    this.db.prepare(sql).run(...a);
+    this.stmt(sql).run(...a);
   }
   meta(key: string, value: string): void {
     this.stmts.meta.run(key, value);

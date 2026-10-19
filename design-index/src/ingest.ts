@@ -14,7 +14,7 @@ export function detectFormat(file: string): Format {
   const head = Buffer.alloc(16);
   fs.readSync(fd, head, 0, 16, 0);
   fs.closeSync(fd);
-  if (head.subarray(0, 2).toString('latin1') === 'PK' || head.subarray(0, 8).toString('latin1') === 'fig-kiwi') return 'fig';
+  if (head.subarray(0, 2).toString('latin1') === 'PK' || ['fig-kiwi', 'fig-jam.', 'fig-deck'].includes(head.subarray(0, 8).toString('latin1'))) return 'fig';
   const text = head.toString('utf8').trimStart();
   if (text.startsWith('{') || text.startsWith('/')) return 'pen';
   throw new Error(`Unknown file format: ${path.basename(file)} (neither .pen JSON nor .fig ZIP/fig-kiwi)`);
