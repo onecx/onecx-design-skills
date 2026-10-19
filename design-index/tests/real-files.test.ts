@@ -12,6 +12,8 @@ import { ingest } from '../src/ingest.js';
 import { buildSpec } from '../src/commands/spec.js';
 import { renderSvg } from '../src/render.js';
 import type { DatabaseSync } from '../src/sqlite.js';
+import { Out } from '../src/output.js';
+import { nodeDetail } from '../src/commands/structure.js';
 
 const dir = process.env.DESIGN_INDEX_FIXTURES ?? '';
 const fileOf = (name: string): string | undefined => {
@@ -263,5 +265,32 @@ describe('Auto line height: Figma\'s saved pitch (unrounded on legacy texts)', (
   });
   it.skipIf(!fileOf('gold-preview.fig'))('gold-preview 1:2104 (box 24)', async () => {
     expect(styles(await open('gold-preview.fig'), '1:2104').font.lpx).toBe(24.205);
+  });
+});
+
+describe.skipIf(!fileOf('gold-preview.fig'))('gold-preview.fig (PR review: full radii, stroke-only overrides, node budget)', () => {
+  const nodeText = (db: DatabaseSync, id: string, maxTokens: number): string => {
+    const o = new Out({ maxTokens, json: false });
+    nodeDetail(db, o, id);
+    const w = process.stdout.write; let s = '';
+    (process.stdout as any).write = (x: string) => { s += x; return true; };
+    try { o.print(); } finally { process.stdout.write = w; }
+    return s;
+  };
+  it('a full radius (999) on the 28×28 stepper icon is a circle (1:3356)', async () => {
+    const svg = renderSvg(await open('gold-preview.fig'), '1:3382', { assetsDir: '', format: 'fig' }).svg;
+    expect(svg).toMatch(/data-id="1:3356"[^>]*><rect x="0" y="0" width="28" height="28" rx="14" fill="#1d4ed8"\/>/);
+  });
+  it('the check icon keeps its colour through the outer fill [] override (1:3382)', async () => {
+    expect(spec(await open('gold-preview.fig'), '1:3382')).toMatch(/"Vector" path .*fill=\$theme-default-primary-foreground\(#ffffff\) \(outline of a 1px stroke\)/);
+  });
+  it('node: default limits unchanged, raw cut with … and a hint; a larger budget shows the full raw JSON (1:1871)', async () => {
+    const db = await open('gold-preview.fig');
+    const def = nodeText(db, '1:1871', 2000);
+    const raw = def.split('\n').find((l) => l.startsWith('raw: '))!;
+    expect(raw.length).toBe(5 + 701);
+    expect(def).toMatch(/→ raw truncated \(700 of \d+ chars\): node 1:1871 --max-tokens 3000/);
+    const full = nodeText(db, '1:1871', 3000).split('\n').find((l) => l.startsWith('raw: '))!.slice(5);
+    expect(JSON.parse(full)).toMatchObject({ ok: '4202:19374' });
   });
 });

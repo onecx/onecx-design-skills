@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openIndex } from '../src/cache.js';
 import { ingest } from '../src/ingest.js';
 import { buildSpec } from '../src/commands/spec.js';
-import { renderSvg, svgToPng } from '../src/render.js';
+import { renderSvg, roundedRect, svgToPng } from '../src/render.js';
 import { bindVar, buildFig, buildZip, g, pathBlob, solid, type FigNode } from './helpers/fig-builder.js';
 import { modesDemoNodes } from './helpers/modes-demo.js';
 import { autoPitch, stylesStr } from '../src/output.js';
@@ -21,6 +21,14 @@ const grad = (r0: number[], r1: number[], extra: Record<string, unknown> = {}) =
 });
 const emoji = (cps: number[]) => ({ type: 'EMOJI', opacity: 1, visible: true, blendMode: 'NORMAL', emojiCodePoints: cps });
 const meta = (family: string, style: string, fontLineHeight: number, fontWeight: number) => ({ fontMetaData: [{ key: { family, style }, fontLineHeight, fontWeight }] });
+const loose = { variableModeBySetMap: { entries: [{ variableSetID: { assetRef: { key: 'dset' } }, variableModeID: g([40, 2]) }] } };
+/** a hug column whose gap and padding are bound to the Density variables (saved values `gap`/`pad`) */
+const looseCard = (gap: number, pad: number) => ({
+  stackMode: 'VERTICAL', stackSpacing: gap, stackCounterSizing: 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE', stackHorizontalPadding: pad, stackVerticalPadding: pad,
+  stackPaddingRight: pad, stackPaddingBottom: pad, fillPaints: [solid(0.93, 0.94, 0.97)],
+  variableConsumptionMap: { entries: [bindVar('STACK_SPACING', 'gapv'), bindVar('STACK_PADDING_TOP', 'padv'), bindVar('STACK_PADDING_RIGHT', 'padv'),
+    bindVar('STACK_PADDING_BOTTOM', 'padv'), bindVar('STACK_PADDING_LEFT', 'padv')] },
+});
 const blobs = [pathBlob([[1, 0, 0], [2, 10, 0], [2, 10, 10], [2, 0, 10], [0]])];
 
 const nodes = (): FigNode[] => [
@@ -128,6 +136,70 @@ const nodes = (): FigNode[] => [
     extra: { fillGeometry: [{ commandsBlob: 0 }], fillPaints: [solid(0, 0, 1)], strokeWeight: 4,
       strokePaints: [grad([1, 0, 0], [1, 0, 0]), solid(0, 1, 0, { blendMode: 'SCREEN' })] } },
   ...modesDemoNodes(),
+  // ---- PR review: scaled instances under explicit modes, tokens in scaled instances, paint opacity, image strokes on lines ----
+  { id: [41, 1], type: 'SYMBOL', name: 'LooseCard', parent: [0, 1], pos: 'z2', w: 140, h: 148, x: 0, y: 800, extra: { ...looseCard(24, 20), ...loose } },
+  { id: [41, 2], type: 'ROUNDED_RECTANGLE', name: 'LA', parent: [41, 1], pos: '!', w: 100, h: 20, x: 20, y: 20, ok: [41, 62], fill: [0.9, 0.3, 0.3] },
+  { id: [41, 3], type: 'ROUNDED_RECTANGLE', name: 'LB', parent: [41, 1], pos: '"', w: 100, h: 20, x: 20, y: 64, ok: [41, 63], fill: [0.3, 0.7, 0.3] },
+  { id: [41, 4], type: 'ROUNDED_RECTANGLE', name: 'LC', parent: [41, 1], pos: '#', w: 100, h: 20, x: 20, y: 108, ok: [41, 64], fill: [0.3, 0.4, 0.9] },
+  { id: [41, 10], type: 'FRAME', name: 'ScaledModes', parent: [1, 1], pos: '$h', w: 300, h: 200 },
+  // a component saved in mode Loose, shown at half size: the saved (scaled) layout already shows the mode's values
+  { id: [41, 11], type: 'INSTANCE', name: 'HalfLoose', parent: [41, 10], pos: '!', w: 70, h: 74, x: 0, y: 0,
+    extra: { ...looseCard(12, 10), symbolData: { symbolID: g([41, 1]), uniformScaleFactor: 0.5 } } },
+  // the default-mode Card at half size under mode Loose: gap 24 × 0.5, padding 20 × 0.5
+  { id: [41, 12], type: 'INSTANCE', name: 'HalfCardLoose', parent: [41, 10], pos: '"', w: 62, h: 50, x: 100, y: 0,
+    extra: { ...looseCard(4, 6), ...loose, symbolData: { symbolID: g([40, 20]), uniformScaleFactor: 0.5 } } },
+  { id: [41, 20], type: 'SYMBOL', name: 'TokenBox', parent: [0, 1], pos: 'z3', w: 40, h: 20, x: 0, y: 1000,
+    extra: { cornerRadius: 8, fillPaints: [solid(1, 1, 1)], variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rlg')] } } },
+  { id: [41, 21], type: 'TEXT', name: 'SizedText', parent: [41, 20], pos: '!', w: 40, h: 20, text: 'x', ok: [41, 71],
+    extra: { fontSize: 16, fontName: { family: 'Inter', style: 'Regular' }, derivedTextData: meta('Inter', 'Regular', 1.21, 400), variableConsumptionMap: { entries: [bindVar('FONT_SIZE', 'fsv')] } } },
+  { id: [41, 22], type: 'INSTANCE', name: 'HalfTokens', parent: [1, 1], pos: '$i', w: 20, h: 10,
+    extra: { cornerRadius: 4, variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rlg')] }, symbolData: { symbolID: g([41, 20]), uniformScaleFactor: 0.5 } } },
+  { id: [41, 23], type: 'INSTANCE', name: 'HalfTokensLoose', parent: [1, 1], pos: '$j', w: 20, h: 10,
+    extra: { cornerRadius: 4, ...loose, symbolData: { symbolID: g([41, 20]), uniformScaleFactor: 0.5 } } },
+  // an opaque colour token painted at 12 % (Material 3 state layer pattern)
+  { id: [41, 30], type: 'ROUNDED_RECTANGLE', name: 'StateLayer', parent: [1, 1], pos: '$k', w: 10, h: 10,
+    extra: { fillPaints: [solid(0.937, 0.267, 0.267, { opacity: 0.12, colorVar: { value: { alias: { assetRef: { key: 'destr' } } }, dataType: 'ALIAS' } })] } },
+  // an image stroke on a horizontal line (zero-height box)
+  { id: [41, 40], type: 'FRAME', name: 'ImageLineBox', parent: [1, 1], pos: '$l', w: 40, h: 40, fill: [1, 1, 1] },
+  { id: [41, 41], type: 'LINE', name: 'ImageLine', parent: [41, 40], pos: '!', w: 40, h: 0, y: 20,
+    extra: { strokeWeight: 6, strokePaints: [{ type: 'IMAGE', imageScaleMode: 'FILL', image: { hash: new Uint8Array([0xab, 0xcd, 0xef]) }, opacity: 1, visible: true }] } },
+  // ---- re-layout keeps Figma's saved offsets (baseline), centres overflow, applies constraints ----
+  { id: [42, 1], type: 'FRAME', name: 'BaseRow', parent: [1, 1], pos: '$m', w: 154, h: 100,
+    extra: { stackMode: 'HORIZONTAL', stackSpacing: 10, stackPrimarySizing: 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE', stackCounterSizing: 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE', stackCounterAlignItems: 'BASELINE', ...loose } },
+  { id: [42, 2], type: 'INSTANCE', name: 'BaseCard', parent: [42, 1], pos: '!', w: 124, h: 100, symbol: [40, 20], extra: { ...looseCard(8, 12) } },
+  // its baseline offset (y 7) is Figma's: the solver does not model baselines
+  { id: [42, 3], type: 'ROUNDED_RECTANGLE', name: 'BaseTag', parent: [42, 1], pos: '"', w: 20, h: 20, x: 134, y: 7, fill: [0.2, 0.2, 0.2] },
+  { id: [42, 10], type: 'FRAME', name: 'OverflowRow', parent: [1, 1], pos: '$n', w: 100, h: 100,
+    extra: { stackMode: 'HORIZONTAL', stackPrimarySizing: 'FIXED', stackPrimaryAlignItems: 'CENTER', frameMaskDisabled: true, ...loose } },
+  { id: [42, 11], type: 'INSTANCE', name: 'WideCard', parent: [42, 10], pos: '!', w: 124, h: 100, x: -12, y: 0, symbol: [40, 20], extra: { ...looseCard(8, 12) } },
+  { id: [42, 20], type: 'VARIABLE', name: 'size/box', key: 'boxw', setKey: 'dset', varType: 'FLOAT', values: [{ mode: [40, 1], num: 100 }, { mode: [40, 2], num: 140 }] },
+  { id: [42, 21], type: 'SYMBOL', name: 'PinFrame', parent: [0, 1], pos: 'z4', w: 100, h: 40, x: 0, y: 1100,
+    extra: { fillPaints: [solid(1, 1, 1)], variableConsumptionMap: { entries: [bindVar('WIDTH', 'boxw')] } } },
+  { id: [42, 22], type: 'ROUNDED_RECTANGLE', name: 'PinRight', parent: [42, 21], pos: '!', w: 10, h: 10, x: 85, y: 5, fill: [1, 0, 0], extra: { horizontalConstraint: 'MAX' } },
+  { id: [42, 23], type: 'ROUNDED_RECTANGLE', name: 'PinMid', parent: [42, 21], pos: '"', w: 10, h: 10, x: 45, y: 5, fill: [0, 1, 0], extra: { horizontalConstraint: 'CENTER' } },
+  { id: [42, 24], type: 'ROUNDED_RECTANGLE', name: 'PinBoth', parent: [42, 21], pos: '#', w: 80, h: 10, x: 10, y: 25, fill: [0, 0, 1], extra: { horizontalConstraint: 'STRETCH' } },
+  { id: [42, 25], type: 'ROUNDED_RECTANGLE', name: 'PinLeft', parent: [42, 21], pos: '$', w: 10, h: 10, x: 5, y: 5, fill: [0, 0, 0] },
+  // a fill-width row placed twice (again once the hug column's width is known) must not shift its children twice
+  { id: [43, 1], type: 'FRAME', name: 'TwiceCol', parent: [1, 1], pos: '$p', w: 100, h: 70,
+    extra: { stackMode: 'VERTICAL', stackSpacing: 10, stackPrimarySizing: 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE', stackCounterSizing: 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE', ...loose } },
+  { id: [43, 2], type: 'FRAME', name: 'TwiceRow', parent: [43, 1], pos: '!', w: 100, h: 20, x: 0, y: 0,
+    extra: { stackMode: 'HORIZONTAL', stackSpacing: 8, stackPrimarySizing: 'FIXED', stackChildAlignSelf: 'STRETCH', variableConsumptionMap: { entries: [bindVar('STACK_SPACING', 'gapv')] } } },
+  { id: [43, 3], type: 'ROUNDED_RECTANGLE', name: 'TwiceA', parent: [43, 2], pos: '!', w: 20, h: 20, x: 0, y: 0, fill: [1, 0, 0] },
+  { id: [43, 4], type: 'ROUNDED_RECTANGLE', name: 'TwiceB', parent: [43, 2], pos: '"', w: 20, h: 20, x: 28, y: 0, fill: [0, 0, 1] },
+  { id: [43, 5], type: 'ROUNDED_RECTANGLE', name: 'TwiceWide', parent: [43, 1], pos: '"', w: 100, h: 40, x: 0, y: 30, fill: [0, 1, 0],
+    extra: { variableConsumptionMap: { entries: [bindVar('WIDTH', 'boxw')] } } },
+  // nested scaled instances (0.5 inside 0.5) and a full radius token in a scaled instance
+  { id: [43, 10], type: 'SYMBOL', name: 'Outer', parent: [0, 1], pos: 'z5', w: 40, h: 20, x: 0, y: 1200 },
+  { id: [43, 11], type: 'INSTANCE', name: 'InnerHalf', parent: [43, 10], pos: '!', w: 20, h: 10,
+    extra: { cornerRadius: 4, variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rlg')] }, symbolData: { symbolID: g([41, 20]), uniformScaleFactor: 0.5 } } },
+  { id: [43, 12], type: 'INSTANCE', name: 'OuterHalf', parent: [1, 1], pos: '$q', w: 20, h: 10, extra: { symbolData: { symbolID: g([43, 10]), uniformScaleFactor: 0.5 } } },
+  { id: [43, 20], type: 'VARIABLE', name: 'radius/full', key: 'rfull', setKey: 'thmset', varType: 'FLOAT', values: [{ mode: [6, 6], num: 999 }, { mode: [6, 7], num: 999 }] },
+  { id: [43, 21], type: 'SYMBOL', name: 'Pill', parent: [0, 1], pos: 'z6', w: 40, h: 20, x: 0, y: 1300,
+    extra: { cornerRadius: 999, fillPaints: [solid(1, 1, 1)], variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rfull')] } } },
+  { id: [43, 22], type: 'INSTANCE', name: 'HalfPill', parent: [1, 1], pos: '$r', w: 20, h: 10,
+    extra: { cornerRadius: 499.5, variableConsumptionMap: { entries: [bindVar('CORNER_RADIUS', 'rfull')] }, symbolData: { symbolID: g([43, 21]), uniformScaleFactor: 0.5 } } },
+  { id: [42, 26], type: 'INSTANCE', name: 'PinLoose', parent: [1, 1], pos: '$o', w: 100, h: 40, symbol: [42, 21],
+    extra: { variableConsumptionMap: { entries: [bindVar('WIDTH', 'boxw')] }, ...loose } },
 ];
 
 let file = '';
@@ -137,7 +209,7 @@ const specOf = (id: string) => buildSpec(db(), id, { maxTokens: Infinity }).text
 const lineOf = (id: string, name: string) => specOf(id).split('\n').find((l) => l.trimStart().startsWith(`"${name}"`)) ?? '';
 const render = (id: string) => renderSvg(db(), id, { assetsDir: path.join(openIndex(file).dir, 'assets'), format: 'fig', background: null });
 const box = (svg: string, id: string) => {
-  const m = new RegExp(`data-id="${id}" transform="translate\\(([\\d.]+) ([\\d.]+)\\)"`).exec(svg);
+  const m = new RegExp(`data-id="${id}" transform="translate\\((-?[\\d.]+) (-?[\\d.]+)\\)"`).exec(svg);
   return m ? [Number(m[1]), Number(m[2])] : [0, 0];
 };
 
@@ -240,6 +312,73 @@ describe('Auto line height: which pitch', () => {
   });
 });
 
+describe('corner radii clamp (CSS-style factors from the original radii)', () => {
+  it('a full radius on a square gives four equal corners (a circle)', () => {
+    expect(roundedRect(0, 0, 28, 28, 999, 0, '')).toContain('rx="14"');
+    expect(roundedRect(0, 0, 100, 20, 9999, 0, '')).toContain('rx="10"');
+  });
+  it('corners sharing a too-short side share it in proportion; other corners keep their radius', () => {
+    expect(roundedRect(0, 0, 10, 30, [10, 10, 0, 0], 0, '')).toBe('<path d="M5 0H5A5 5 0 0 1 10 5V30L10 30H0L0 30V5A5 5 0 0 1 5 0Z" />');
+    // every corner takes the smaller factor of its two sides (the short sides decide: 20 / (999 + 4))
+    expect(roundedRect(0, 0, 40, 20, [999, 4, 999, 4], 0, '')).toMatch(/^<path d="M19\.92 0H39\.92A0\.08 0\.08 /);
+  });
+  it('draws the full-radius icon of gold-preview 1:3356 as a circle (stroke inset too)', () => {
+    expect(roundedRect(1, 1, 26, 26, 999, 1, 'x', 28, 28)).toBe('<rect x="1" y="1" width="26" height="26" rx="13" x/>');
+  });
+});
+
+describe('tokens inside a scaled instance', () => {
+  it('print the token value, the scale and the drawn value', () => {
+    const r = lineOf('1:1', 'HalfTokens');
+    expect(r).toContain('scale=0.5');
+    expect(r).toContain('r=$radius-lg(8px×0.5=4px)');
+    expect(specOf('41:22')).toMatch(/^# \$name\(Npx×F=Mpx\) = token inside an instance scaled by F/m);
+  });
+  it('font size and lh-normal agree (both scaled)', () => {
+    expect(lineOf('41:22', 'SizedText')).toContain('font=Inter/$type-size(16px×0.5=8px)/lh-normal(9.5px)');
+  });
+  it('under an explicit mode: the mode value, scaled; Figma\'s pitch round(1.21 × 24) × 0.5', () => {
+    expect(lineOf('41:23', 'SizedText')).toContain('font=Inter/$type-size(24px×0.5=12px)/lh-normal(14.5px)');
+    expect(render('41:23').svg).toMatch(/font-size="12"/);
+  });
+  it('nested scaled instances: own and total factor; tokens use the total', () => {
+    const l = lineOf('43:12', 'InnerHalf');
+    expect(l).toContain('scale=0.5(total=0.25)');
+    expect(l).toContain('r=$radius-lg(8px×0.25=2px)');
+    expect(lineOf('43:12', 'OuterHalf')).toMatch(/scale=0\.5( |$)/);
+  });
+  it('a full radius token (pill) prints without scale arithmetic', () => {
+    const l = lineOf('1:1', 'HalfPill');
+    expect(l).toContain('r=$radius-full(999px)');
+    expect(l).not.toMatch(/px×/);
+  });
+  it('no scale note without a scaled instance', () => {
+    expect(specOf('6:10')).not.toContain('×F=');
+  });
+});
+
+describe('paint opacity of a colour-bound paint', () => {
+  it('appends /opA to the token and documents it', () => {
+    expect(lineOf('1:1', 'StateLayer')).toContain('fill=$theme-destructive(#ef4444)/op0.12');
+    expect(specOf('41:30')).toMatch(/^# \$name\(value\)\/opA = colour token painted at opacity A/m);
+    expect(lineOf('1:1', 'Danger')).not.toContain('/op');
+  });
+  it('draws the token colour at the paint opacity; tree/node print it too', () => {
+    expect(render('41:30').svg).toMatch(/fill="#ef4444" fill-opacity="0\.12"/);
+    expect(stylesStr(styles('41:30'), { nameOf: nameOfFor(db()) })).toContain('fill=$theme-destructive(#ef4444)/op0.12');
+  });
+});
+
+describe('image strokes on lines', () => {
+  it('paints the stroke box at least as thick as the stroke (no zero-height pattern)', async () => {
+    const r = render('41:40');
+    expect(r.svg).toMatch(/<pattern id="p\d+"[^>]* width="40" height="6">/);
+    expect(r.svg).not.toMatch(/<pattern [^>]*height="0"/);
+    const px = await pixels(r.svg);
+    expect(px.at(20, 21)).toEqual([255, 0, 0, 255]);
+  });
+});
+
 describe('token references with their value', () => {
   it('prints $name(value): alias chains resolved, lengths in px, explicit mode applied', () => {
     expect(lineOf('1:1', 'Danger')).toContain('fill=$theme-destructive(#ef4444) r=$radius-lg(8px)');
@@ -329,6 +468,47 @@ describe('auto layout under an explicit variable mode (gap, padding, size)', () 
     expect(box(r.svg, '40:22')).toEqual([20, 64]);
     expect(box(r.svg, '40:23')).toEqual([20, 108]);
     expect(r.notes.join(' ')).toMatch(/Auto layout re-solved/);
+  });
+  it('a scaled instance whose saved layout already shows the mode keeps its saved positions (mode values × scale)', () => {
+    const r = render('41:11');
+    expect([r.w, r.h]).toEqual([70, 74]);
+    expect(box(r.svg, '41:2')).toEqual([10, 10]);
+    expect(box(r.svg, '41:3')).toEqual([10, 32]);
+    expect(box(r.svg, '41:4')).toEqual([10, 54]);
+    expect(r.notes.join(' ')).not.toMatch(/Auto layout re-solved/);
+  });
+  it('re-lays out a scaled instance with the mode values × scale', () => {
+    const r = render('41:12');
+    expect([r.w, r.h]).toEqual([70, 74]);
+    expect(box(r.svg, '40:21')).toEqual([10, 10]);
+    expect(box(r.svg, '40:22')).toEqual([10, 32]);
+    expect(box(r.svg, '40:23')).toEqual([10, 54]);
+    expect(r.notes.join(' ')).toMatch(/Auto layout re-solved/);
+  });
+  it('keeps a saved cross-axis offset (baseline) and shifts following siblings by the size delta only', () => {
+    const r = render('42:1');
+    expect([r.w, r.h]).toEqual([170, 148]);
+    expect(box(r.svg, '42:3')).toEqual([150, 7]);
+  });
+  it('centres content that overflows a fixed container (negative offset)', () => {
+    const r = render('42:10');
+    expect(box(r.svg, '42:11')).toEqual([-20, 0]);
+  });
+  it('a child placed twice (fill width settled after the hug column grew) shifts its children once', () => {
+    const r = render('43:1');
+    expect([r.w, r.h]).toEqual([140, 70]);
+    expect(r.svg).toMatch(/data-id="43:2"[^>]*>(?:<[^>]*>)*?<rect [^>]*width="140"/);
+    expect(box(r.svg, '43:4')).toEqual([44, 0]);
+  });
+  it('children of a frame resized by a mode follow their constraints', () => {
+    const r = render('42:26');
+    expect(r.w).toBe(140);
+    expect(box(r.svg, '42:22')).toEqual([125, 5]);
+    expect(box(r.svg, '42:23')).toEqual([65, 5]);
+    expect(box(r.svg, '42:24')).toEqual([10, 25]);
+    expect(r.svg).toMatch(/data-id="42:24"[^>]*>(?:<[^>]*>)*?<rect [^>]*width="120"/);
+    expect(box(r.svg, '42:25')).toEqual([5, 5]);
+    expect(r.notes.join(' ')).toMatch(/follow their constraints/);
   });
   it('propagates the new size to the auto-layout parent; other geometry stays saved', () => {
     const r = render('40:10');

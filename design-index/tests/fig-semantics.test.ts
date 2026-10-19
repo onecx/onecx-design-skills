@@ -123,6 +123,14 @@ const nodes = (): FigNode[] => [
     extra: { strokePaints: [solid(0, 0, 0)], strokeWeight: 1, cornerRadius: 4 } },
   { id: [7, 6], type: 'INSTANCE', name: 'NoIcon', parent: [1, 1], pos: '@', w: 120, h: 40, symbol: [7, 1],
     overrides: [{ path: [[8, 2]], extra: { strokePaints: [] } }] },
+  // ---- PR review: a nested owner recolours the stroke-only icon, the outer owner sends a fill override (fill [] / paints) ----
+  { id: [70, 1], type: 'SYMBOL', name: 'Toolbar', parent: [0, 1], pos: 'q0', w: 200, h: 40 },
+  { id: [70, 2], type: 'INSTANCE', name: 'Btn', parent: [70, 1], pos: '!', w: 120, h: 40, symbol: [7, 1], ok: [70, 90],
+    overrides: [{ path: [[8, 2]], extra: { strokePaints: [solid(1, 1, 1)] } }] },
+  { id: [70, 3], type: 'INSTANCE', name: 'ToolbarClear', parent: [1, 1], pos: 'q1', w: 200, h: 40, symbol: [70, 1],
+    overrides: [{ path: [[70, 90], [8, 2]], extra: { fillPaints: [] } }] },
+  { id: [70, 4], type: 'INSTANCE', name: 'ToolbarRed', parent: [1, 1], pos: 'q2', w: 200, h: 40, symbol: [70, 1],
+    overrides: [{ path: [[70, 90], [8, 2]], extra: { fillPaints: [solid(1, 0, 0)] } }] },
   // ---- style records and variables (Internal Only Canvas, after their consumers) ----
   { id: [0, 2], type: 'CANVAS', name: 'Internal Only Canvas', parent: [0, 0], pos: '~' },
   { id: [9, 1], type: 'TEXT', name: 'M3/label/large', parent: [0, 2], pos: '!', w: 10, h: 10, text: 'Ag',
@@ -523,6 +531,15 @@ describe('review fixes', () => {
     expect(raw('6:10').geometryFrom).toBe('stroke');
     expect(s.fill).toEqual([{ k: 'solid', c: '#008000' }]);
     expect(s.stroke).toBeUndefined();
+  });
+  it('keeps the outline colour of a stroke-only icon when an outer owner overrides its fill (fill [] or paints)', () => {
+    for (const id of ['70:3', '70:4']) {
+      const t = new Evaluator(db(), { maxDepth: 99, cap: 1000 }).build(row(id));
+      const icon = t.kids[0].kids.find((k) => k.row.name === 'icon')!;
+      expect(JSON.parse(icon.row.styles ?? '{}').fill).toEqual([{ k: 'solid', c: '#ffffff' }]);
+      const svg = renderSvg(db(), icon.row.id, { assetsDir: '', format: 'fig', background: null, vnode: icon }).svg;
+      expect(svg).toContain('fill="#ffffff"');
+    }
   });
   it('hides an outline icon whose instance clears its stroke paints', () => {
     const t = new Evaluator(db(), { maxDepth: 99, cap: 1000 }).build(row('7:6'));

@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { DatabaseSync } from '../sqlite.js';
 import type { Layout, Paint, Styles, TextRun } from '../model.js';
 import { getMeta } from '../db.js';
-import { Out, gradientStr, layoutStr, lhNormal, lsStr, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
+import { Out, autoPitch, gradientStr, layoutStr, lhNormal, lsStr, opSuffix, paintStr, q, safeJson, sizeStr, textAttrs } from '../output.js';
 import { TokenIndex } from '../tokens.js';
 import { estTokens } from '../util.js';
 import { compLabel, requireNode, type NodeRec } from './structure.js';
@@ -38,8 +38,8 @@ function paintSpec(c: Ctx, p: Paint, modes?: string[], w?: number | null, h?: nu
     return t ? `${p.c}(=$${t}?)` : p.c;
   }
   if (p.k === 'solid' && p.v) {
-    // the value in effect here (default mode, or the explicit mode of the context)
-    return c.tokens.ref(p.v, modes);
+    // the value in effect here (default mode, or the explicit mode of the context); the paint's own opacity applies on top
+    return c.tokens.ref(p.v, modes) + opSuffix(c.tokens.paintOpacity(p.v, p.c, modes));
   }
   if (p.k === 'img') {
     const a = p.asset ? c.assets.get(p.asset) : undefined;
@@ -49,24 +49,30 @@ function paintSpec(c: Ctx, p: Paint, modes?: string[], w?: number | null, h?: nu
   return paintStr({ ...p, bm: undefined });
 }
 
-/** `$token`, plus `{value}` when the explicit modes in effect give it another value than its default mode. */
-function tokRef(c: Ctx, ref: string, modes?: string[], key?: string): string {
-  return c.tokens.ref(ref, modes, key);
+/**
+ * `$token(value)`: the value under the explicit modes in effect; `sc` = accumulated scale of the enclosing instances (lengths print
+ * `$token(Npx×F=Mpx)`, see TokenIndex.ref).
+ */
+function tokRef(c: Ctx, ref: string, modes?: string[], key?: string, sc?: number): string {
+  return c.tokens.ref(ref, modes, key, sc);
 }
 
 /** Keys of Styles.vars that are printed in place of the value they bind (gap, padding, radius, font) instead of separately. */
 const INLINE_VARS = new Set(['gap', 'pad-top', 'pad-right', 'pad-bottom', 'pad-left', 'radius', 'r-tl', 'r-tr', 'r-br', 'r-bl', 'font-size', 'font-family', 'line-height', 'letter-spacing', 'text']);
 
 /** Radius binding: one token for all corners or per corner (tl,tr,br,bl); unbound corners keep their number. */
-function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r'], modes?: string[]): string | undefined {
+function radiusVar(c: Ctx, v: Record<string, string>, r: Styles['r'], modes?: string[], sc?: number, w?: number | null, h?: number | null): string | undefined {
   const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => v[k] ?? v.radius);
   if (!corners.some(Boolean)) return undefined;
   const nums = Array.isArray(r) ? r : [r ?? 0, r ?? 0, r ?? 0, r ?? 0];
-  const names = corners.map((x, i) => (x ? tokRef(c, x, modes, 'radius') : String(nums[i] ?? 0)));
+  // a "full" radius (pill/circle: at least half the short side, e.g. 999) stays full when scaled: no ×F arithmetic for it
+  const half = w != null && h != null ? Math.min(w, h) / 2 : Infinity;
+  const full = (x: string) => { const t = c.tokens.valueOf(x, modes); return typeof t === 'number' && t * (sc ?? 1) >= half; };
+  const names = corners.map((x, i) => (x ? tokRef(c, x, modes, 'radius', full(x) ? undefined : sc) : String(nums[i] ?? 0)));
   return new Set(names).size === 1 ? names[0] : names.join(',');
 }
 
-function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): string[] {
+function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[], sc?: number): string[] {
   const p: string[] = [];
   if (!s) return p;
   const isText = n.type === 'text';
@@ -74,7 +80,7 @@ function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): str
   if (s.fill?.length) p.push(`${isText ? 'color' : 'fill'}=${paintsSpec(c, s.fill, modes, n.w, n.h)}`);
   if (raw?.geometryFrom === 'stroke' && typeof raw.outlineW === 'number') p.push(`(outline of a ${s.ow ?? raw.outlineW}px stroke)`);
   if (s.stroke) p.push(`stroke=${paintsSpec(c, s.stroke.paints, modes, n.w, n.h)}/${Array.isArray(s.stroke.w) ? s.stroke.w.join(',') : s.stroke.w ?? 1}${s.stroke.align ? '/' + s.stroke.align : ''}${s.stroke.dash?.length ? `/dash${s.stroke.dash.join(',')}` : ''}`);
-  const rv = s.vars && n.type !== 'path' && n.type !== 'boolean' && n.type !== 'polygon' ? radiusVar(c, s.vars, s.r, modes) : undefined;
+  const rv = s.vars && n.type !== 'path' && n.type !== 'boolean' && n.type !== 'polygon' ? radiusVar(c, s.vars, s.r, modes, sc, n.w, n.h) : undefined;
   if (rv) p.push(`r=${rv}`);
   else if (s.r != null) p.push(`r=${Array.isArray(s.r) ? s.r.join(',') : s.r}`);
   if (s.op != null) p.push(`op=${s.op}`);
@@ -83,26 +89,35 @@ function styleParts(c: Ctx, n: NodeRec, s: Styles | null, modes?: string[]): str
   if (s.rot) p.push(`rot=${s.rot}`);
   if (s.flip) p.push(`flip=${s.flip}`);
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `${e.inner ? 'inset-' : ''}shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.spread ? ',' + e.spread : ''},${e.c ?? '#000'})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
-  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=${tokRef(c, v, modes, k)}`));
+  if (s.vars) p.push(...Object.entries(s.vars).filter(([k]) => !INLINE_VARS.has(k)).map(([k, v]) => `${k}=${tokRef(c, v, modes, k, sc)}`));
   if (s.vars?.text && isText) p.push(`text-token=$${c.tokens.nameFor(s.vars.text)}`);
   if (s.sty) p.push(`styles{${Object.entries(s.sty).map(([k, v]) => `${k}:${JSON.stringify(v)}`).join(',')}}`);
   return p;
 }
 
-function fontStr(c: Ctx, s: Styles | null, modes?: string[]): string {
+/** `lh-normal(Npx)` under a mode's font size `ms` (unscaled variable value); in a scaled instance Figma scales the unscaled pitch */
+function autoLh(f: NonNullable<Styles['font']>, ms: unknown, sc?: number): string {
+  if (typeof ms !== 'number') return lhNormal(f);
+  const k = sc ?? 1;
+  if (k === 1) return lhNormal(f, ms);
+  const p = autoPitch({ nlh: f.nlh }, ms);
+  return p !== undefined ? `lh-normal(${Math.round(p * k * 100) / 100}px)` : lhNormal(f, ms * k);
+}
+
+function fontStr(c: Ctx, s: Styles | null, modes?: string[], sc?: number): string {
   const f = s?.font;
   if (!f) return '';
   const v = s?.vars ?? {};
   // a bound variable (fig) or a `$name` reference stored in the field itself (.pen) prints as `$name(value)`
-  const lit = (x: unknown, k: string): unknown => (typeof x === 'string' && x.startsWith('$') ? tokRef(c, x.slice(1), modes, k) : x);
-  const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k) : undefined);
-  // line height / letter spacing variables hold px values (Figma), the literal lh is a multiplier
-  const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : lit(f.lh, 'line-height')) : undefined);
+  const lit = (x: unknown, k?: string): unknown => (typeof x === 'string' && x.startsWith('$') ? tokRef(c, x.slice(1), modes, k, sc) : x);
+  const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k, sc) : undefined);
+  // line height / letter spacing variables hold px values (Figma), the literal lh is a multiplier (.pen `lineHeight`, also as a
+  // `$name` reference): no unit, no scale
+  const lh = tok('line-height') ?? (f.lh != null ? (typeof f.lh === 'number' ? Math.round(f.lh * 1000) / 1000 : lit(f.lh)) : undefined);
   const ls = tok('letter-spacing') ?? (f.ls != null ? (typeof f.ls === 'number' ? Math.round(f.ls * 100) / 100 : lit(f.ls, 'letter-spacing')) : undefined);
-  // a font size bound to a variable under an explicit mode: the pitch follows the mode's size
+  // a font size bound to a variable under an explicit mode: the pitch follows the mode's size (scaled inside a scaled instance)
   const ms = v['font-size'] ? c.tokens.modeValue(v['font-size'], modes) : undefined;
-  const modeSize = typeof ms === 'number' ? ms : undefined;
-  const font = 'font=' + [tok('font-family') ?? lit(f.f, 'font-family'), tok('font-size') ?? lit(f.s, 'font-size'), f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${lit(f.w, 'font-weight')}` : null, lh != null ? `lh${lh}` : c.fig ? lhNormal(f, modeSize) : null,
+  const font = 'font=' + [tok('font-family') ?? lit(f.f, 'font-family'), tok('font-size') ?? lit(f.s, 'font-size'), f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${lit(f.w, 'font-weight')}` : null, lh != null ? `lh${lh}` : c.fig ? autoLh(f, ms, sc) : null,
     ls != null ? lsStr(ls) : null, f.al, f.st, f.deco].filter((x) => x != null && x !== '').join('/');
   return [font, ...textAttrs(f)].join(' ');
 }
@@ -121,7 +136,7 @@ function visualBox(n: NodeRec, s: Styles | null, raw: Record<string, unknown> | 
   return `visual@${r(Math.min(...xs))},${r(Math.min(...ys))} ${r(Math.max(...xs) - Math.min(...xs))}×${r(Math.max(...ys) - Math.min(...ys))}`;
 }
 
-function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean, geomKey: string | undefined, modes?: string[]): { head: string; style: string } {
+function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean, geomKey: string | undefined, modes?: string[], sc?: number): { head: string; style: string } {
   const l = safeJson<Layout>(n.layout);
   const s = safeJson<Styles>(n.styles);
   const raw = safeJson<Record<string, unknown>>(n.raw);
@@ -139,7 +154,7 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   let lv: Layout | null = l ? { ...l, w: undefined, h: undefined, abs: undefined } : null;
   const v = s?.vars;
   if (lv && v) {
-    const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k) : undefined);
+    const tok = (k: string) => (v[k] ? tokRef(c, v[k], modes, k, sc) : undefined);
     if (v.gap && lv.gap !== undefined) lv.gap = tok('gap');
     const sides = ['pad-top', 'pad-right', 'pad-bottom', 'pad-left'];
     if (sides.some((k) => v[k])) lv = { ...lv, pad: sides.map((k, i) => tok(k) ?? (lv!.pad?.[i] ?? 0)) as unknown as number[] };
@@ -151,7 +166,11 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (raw?.revZ) head.push('z-reverse');
   if (raw?.mask) head.push(raw.maskType && raw.maskType !== 'ALPHA' ? `mask(${String(raw.maskType).toLowerCase()})` : 'mask');
   if (n.component_ref) head.push(`→${compLabel(c.db, n.component_ref)}`);
-  if (typeof raw?.usf === 'number') head.push(`scale=${Math.round(raw.usf * 1000) / 1000}`);
+  if (typeof raw?.usf === 'number') {
+    // inside another scaled instance: the factor the token values below are multiplied by is the product
+    const own = Math.round(raw.usf * 1000) / 1000, total = sc !== undefined ? Math.round(sc * 1000) / 1000 : own;
+    head.push(`scale=${own}${total !== own ? `(total=${total})` : ''}`);
+  }
   if (n.type === 'text' && n.text) head.push(`text=${JSON.stringify(n.text.length > 400 ? n.text.slice(0, 400) + '…' : n.text)}`);
   if (s?.link) head.push(`link=${s.link}`);
   if (n.type === 'text' && n.text && s?.runs?.length) { const rr = runsStr(c, n.text, s, modes, n.w, n.h); if (rr) head.push(rr); }
@@ -160,7 +179,7 @@ function lineFor(c: Ctx, n: NodeRec, parent: NodeRec | null, parentAbs: boolean,
   if (n.type === 'icon' && raw?.icon) head.push(`icon=${raw.library ?? ''}:${raw.icon}`);
   if (VECTOR_TYPES.has(n.type)) head.push(`svg=assets/${svgName(n, geomKey)}`);
   if (!n.visible) head.push('(hidden)');
-  const style = [...styleParts(c, n, s, modes), fontStr(c, s, modes)].filter(Boolean).join(' ');
+  const style = [...styleParts(c, n, s, modes, sc), fontStr(c, s, modes, sc)].filter(Boolean).join(' ');
   return { head: head.join(' '), style };
 }
 
@@ -224,7 +243,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
   const cap = Number.isFinite(opts.maxTokens) ? Math.ceil(opts.maxTokens / 5) + 20 : Infinity;
   const TOO_BIG = new Error('spec too big for budget');
   const render = (maxDepth: number): SpecResult => {
-    interface Item { eff?: string[]; geomKey?: string; n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; note?: string; modes?: string[] }
+    interface Item { eff?: string[]; geomKey?: string; scale?: number; n: NodeRec; d: number; parent: NodeRec | null; parentAbs: boolean; more?: number; note?: string; modes?: string[] }
     const items: Item[] = [];
     const hiddenInfo: { id: string; name: string }[] = [];
     let hiddenSkipped = 0;
@@ -246,7 +265,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       }
       const slotLike = v.isInstance && v.kids.length > 0 && /^slot\b/i.test(compLabel(db, v.row.component_ref));
       items.push({
-        eff, geomKey: v.geomKey, n: v.row, d, parent, parentAbs: parent ? parentIsAbs(parent) : true, more: v.truncated, modes: v.modes,
+        eff, geomKey: v.geomKey, scale: v.scale, n: v.row, d, parent, parentAbs: parent ? parentIsAbs(parent) : true, more: v.truncated, modes: v.modes,
         note: slotLike ? 'slot placeholder: its default content ("Slot component …") is editor decoration, not UI; the real content is given by "text value(s) not placed" below' : undefined,
       });
       if (v.unplaced?.length) unplaced.push({ id: v.row.id, name: v.row.name, texts: v.unplaced });
@@ -256,7 +275,7 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
     walk(tree, 0, null);
 
     // repeated style strings become classes, referenced once per node
-    const lines = items.map((it) => lineFor(c, it.n, it.parent, it.parent ? parentIsAbs(it.parent) : true, it.geomKey, it.eff));
+    const lines = items.map((it) => lineFor(c, it.n, it.parent, it.parent ? parentIsAbs(it.parent) : true, it.geomKey, it.eff, it.scale));
     const freq = new Map<string, number>();
     for (const l of lines) if (l.style.length > 24) freq.set(l.style, (freq.get(l.style) ?? 0) + 1);
     const classes = new Map<string, string>();
@@ -278,7 +297,12 @@ export function buildSpec(db: DatabaseSync, id: string, opts: { maxTokens: numbe
       return !!(st?.runs?.length || st?.link || st?.blend || st?.font?.trim || bm(st?.fill) || bm(st?.stroke?.paints) || rw?.revZ || typeof rw?.usf === 'number');
     });
     if (usesNew)
-      out.push('# runs[i-j "chars" …] = character range [i,j) of text= with its own style (only what differs; <span>); emoji = colour emoji characters (keep them as text, no text colour applies) · link= hyperlink (URL or #node-id) · blend=mode / paint|mode = mix-blend-mode / background-blend-mode · trim=cap = text box trimmed to cap height and baseline (CSS text-box: trim-both cap alphabetic) · z-reverse = earlier children are painted on top of later ones (CSS: descending z-index) · scale=F on an instance = Figma scaled its component by F: every value below is already scaled');
+      out.push('# runs[i-j "chars" …] = character range [i,j) of text= with its own style (only what differs; <span>); emoji = colour emoji characters (keep them as text, no text colour applies) · link= hyperlink (URL or #node-id) · blend=mode / paint|mode = mix-blend-mode / background-blend-mode · trim=cap = text box trimmed to cap height and baseline (CSS text-box: trim-both cap alphabetic) · z-reverse = earlier children are painted on top of later ones (CSS: descending z-index) · scale=F on an instance = Figma scaled its component by F: every value below is already scaled; scale=F(total=G) = inside another scaled instance, G = all factors multiplied');
+    if (items.some((it) => it.scale !== undefined && Math.abs(it.scale - 1) > 1e-6 && !!it.n.styles?.includes('"vars"')))
+      out.push('# $name(Npx×F=Mpx) = token inside an instance scaled by F: the token holds N, this layer draws M (CSS: calc(var(--name) * F)); use M if the project has no such token, never N');
+    const opBound = (ps: Paint[] | undefined, modes?: string[]) => !!ps?.some((p) => p.k === 'solid' && !!p.v && c.tokens.paintOpacity(p.v, p.c, modes) !== undefined);
+    if (items.some((it) => { const st = safeJson<Styles>(it.n.styles); return !!st && (opBound(st.fill, it.eff) || opBound(st.stroke?.paints, it.eff) || !!st.runs?.some((r) => opBound(r.fill, it.eff))); }))
+      out.push('# $name(value)/opA = colour token painted at opacity A (CSS: color-mix(in srgb, var(--name) A×100%, transparent), or value with alpha A); never drop the /opA');
     if (getMeta(db, 'color_profile') === 'DISPLAY_P3') out.push(`# ${P3_NOTE}`);
     if (classes.size) {
       out.push('# Classes (repeated styles):');

@@ -53,6 +53,11 @@ export interface VNode {
   geomKey?: string;
   /** size the saved shape (`geomKey`) was stored at, when an enclosing instance scaled the node afterwards */
   geomBox?: [number, number];
+  /**
+   * accumulated uniform scale of the enclosing instances (uniformScaleFactor, product over all levels; absent = 1): this node's
+   * numbers are already scaled by it, variable values (tokens, mode values) are not
+   */
+  scale?: number;
 }
 
 export class TooBig extends Error {}
@@ -350,6 +355,7 @@ export class Evaluator {
     if (typeof usf === 'number' && usf > 0 && usf !== 1) {
       // everything is scaled, then the instance record's own (placed-space) values are restored
       const own = { w: src.w, h: src.h, l: safeJson<Layout>(src.layout), s: safeJson<Styles>(src.styles) };
+      // (the instance's own record holds placed-space values, i.e. already scaled: it carries the scale like its content)
       scaleTree(node, usf);
       const r = { ...node.row, x: src.x, y: src.y, w: own.w, h: own.h };
       if (own.l && r.layout) {
@@ -439,16 +445,24 @@ export class Evaluator {
       let ov: Styles = o.st ?? {};
       // ranges belong to the override's characters: without them (outranked by a property value) they do not apply
       if (ov.runs && !textApplies) { const { runs: _r, ...rest } = ov; void _r; ov = rest; }
+      const fromStroke = raw?.geometryFrom === 'stroke';
+      // a stroke-only vector draws its stroke outline as a fill: its fill paints (and fill style) are not drawn in Figma, so a fill
+      // override (paints, `fill: []`, a fill style) must not replace or clear the outline's colour (mirrors applyStyleUse)
+      if (fromStroke && (ov.fill || ov.sty?.fill !== undefined)) {
+        const { fill: _f, sty, ...rest } = ov; void _f;
+        ov = rest;
+        if (sty) { const { fill: _s, ...names } = sty; void _s; if (Object.keys(names).length) ov.sty = names; }
+      }
       // an override that detaches the fill style and brings no paints shows the layer's own paints (the style's values were a link)
       if (ov.sty?.fill === '' && !ov.fill) {
         const own = safeJson<Styles>(row.styles)?.ifill;
         if (own) ov = { ...ov, fill: own };
       }
       // a stroke-only vector draws its stroke outline as a fill: a stroke colour override recolours that fill
-      if (raw?.geometryFrom === 'stroke' && ov.stroke) {
+      if (fromStroke && ov.stroke) {
         const { stroke, ...rest } = ov;
         // an empty stroke list hides the outline (fill [] clears)
-        ov = { ...rest, fill: stroke.paints };
+        ov = stroke.paints ? { ...rest, fill: stroke.paints } : rest;
       }
       const st = mergeStyles(safeJson<Styles>(row.styles) ?? {}, ov);
       if (o.sp && st.stroke && raw?.geometryFrom !== 'stroke') st.stroke = strokeWith(st.stroke, o.sp);
@@ -544,6 +558,7 @@ function scaleTree(v: VNode, f: number): void {
     r.layout = JSON.stringify(l);
   }
   v.row = r;
+  v.scale = (v.scale ?? 1) * f;
   for (const k of v.kids) scaleTree(k, f);
 }
 

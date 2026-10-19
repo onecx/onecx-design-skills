@@ -137,17 +137,37 @@ export class TokenIndex {
   /**
    * A token reference with its value where it is used: `$name(value)` = use var(--name); here it resolves to value (aliases
    * followed, explicit modes applied). Lengths (`key` = a Styles.vars field such as gap, pad-top, radius, font-size) get `px`.
-   * Without a concrete value just `$name`.
+   * Without a concrete value just `$name`. `scale` = accumulated uniform scale of the enclosing instances: a length then prints
+   * `$name(Npx×F=Mpx)` (the token holds N, the scaled instance draws M; CSS: calc(var(--name) * F)).
    */
-  ref(id: string, modes?: string[], key?: string): string {
+  ref(id: string, modes?: string[], key?: string, scale?: number): string {
     const name = `$${this.nameFor(id)}`;
     const v = this.valueOf(id, modes);
     let s: string;
-    if (typeof v === 'number') s = `${Math.round(v * 1000) / 1000}${key && PX_KEYS.test(key) ? 'px' : ''}`;
+    const r3 = (x: number) => Math.round(x * 1000) / 1000;
+    const px = !!key && PX_KEYS.test(key);
+    if (typeof v === 'number' && px && scale !== undefined && Math.abs(scale - 1) > 1e-6) s = `${r3(v)}px×${r3(scale)}=${r3(v * scale)}px`;
+    else if (typeof v === 'number') s = `${r3(v)}${px ? 'px' : ''}`;
     else if (typeof v === 'string') s = v.length <= 40 && !/[()\s]/.test(v) ? v : JSON.stringify(v.length > 40 ? v.slice(0, 40) + '…' : v);
     else if (typeof v === 'boolean') s = String(v);
     else return name;
     return `${name}(${s})`;
+  }
+  /**
+   * Opacity a bound solid paint adds on top of its colour token: the saved paint colour's alpha (Figma: colour alpha × paint
+   * opacity) over the token's alpha under `modes`. Figma mirrors a colour variable's alpha into the paint opacity when it binds
+   * it, so a plain bound paint gives 1 (undefined); a lower paint opacity gives that factor. A factor above 1 means the file was
+   * saved under another mode than the one in effect here: undefined.
+   */
+  paintOpacity(ref: string, saved: string | undefined, modes?: string[]): number | undefined {
+    const tv = this.colorValue(ref, modes);
+    if (!tv || !saved) return undefined;
+    const alpha = (h: string) => (/^#[0-9a-f]{8}$/i.test(h) ? parseInt(h.slice(7, 9), 16) / 255 : /^#[0-9a-f]{6}$/i.test(h) ? 1 : undefined);
+    const a = alpha(saved), t = alpha(tv);
+    if (a === undefined || !t) return undefined;
+    const f = a / t;
+    // (8-bit alphas: two decimals)
+    return f < 0.98 ? Math.round(f * 100) / 100 : undefined;
   }
   get empty(): boolean { return this.tokens.length === 0; }
   private names?: Map<string, string>;

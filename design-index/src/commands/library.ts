@@ -5,6 +5,7 @@ import { Out, q, safeJson } from '../output.js';
 import { cssName, isAlias, loadTokens, modesOf, resolveValue, tokenNames, type TokenRec } from '../tokens.js';
 import { getMeta } from '../db.js';
 import { P3_NOTE } from './spec.js';
+import { budgetFor } from './structure.js';
 
 interface CompRec { id: string; name: string; page: number; description: string; set_id: string | null; set_name: string | null; variant: string | null; props: string | null; instances: number }
 
@@ -23,6 +24,8 @@ export function components(db: DatabaseSync, out: Out, filter?: string): void {
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
   }
   out.head(`# ${groups.size} components (sets), ${rows.length} entries in total${f ? ` · filter "${filter}"` : ''}`);
+  /** budget at which `node <id>` shows every cut props list / description in full (0 = nothing cut) */
+  let need = 0;
   for (const [name, list] of groups) {
     const inst = list.reduce((a, b) => a + b.instances, 0);
     const first = list[0];
@@ -31,10 +34,11 @@ export function components(db: DatabaseSync, out: Out, filter?: string): void {
     for (const r of list) for (const [k, v] of Object.entries(safeJson<Record<string, string>>(r.variant) ?? {})) (variantAxes.get(k) ?? variantAxes.set(k, new Set()).get(k)!).add(v);
     const parts = [`${q(name, 50)} id=${list.length === 1 || !first.set_id ? first.id : first.set_id}`, `${list.length > 1 ? list.length + ' variants' : '1'}`, `${inst}× used`];
     if (variantAxes.size) parts.push(`variants: ${[...variantAxes].map(([k, v]) => `${k}={${[...v].slice(0, 8).join('|')}${v.size > 8 ? '|…' : ''}}`).join(' ')}`);
-    if (props && Object.keys(props).length) parts.push(`props: ${Object.entries(props).map(([k, v]) => `${k}:${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ').slice(0, 160)}`);
-    if (first.description) parts.push(`„${first.description.replace(/\s+/g, ' ').slice(0, 100)}“`);
+    if (props && Object.keys(props).length) { const p = Object.entries(props).map(([k, v]) => `${k}:${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '); parts.push(`props: ${p.length > 160 ? p.slice(0, 159) + '…' : p}`); if (p.length > 160) need = Math.max(need, budgetFor(first.props!.length, 'props')); }
+    if (first.description) { const d = first.description.replace(/\s+/g, ' ').trim(); parts.push(`„${d.length > 100 ? d.slice(0, 99) + '…' : d}“`); if (d.length > 100) need = Math.max(need, budgetFor(d.length, 'desc')); }
     out.add(parts.join(' · '), { name, id: first.id, variants: list.length, instances: inst, axes: Object.fromEntries([...variantAxes].map(([k, v]) => [k, [...v]])), props });
   }
+  if (need) out.hint(`props/descriptions cut with …: \`node <id> --max-tokens ${need}\` shows them in full.`);
   out.hint('`tree <id> --depth 2` or `spec <id>` shows the structure of a component; `states <id>` lists states.');
 }
 

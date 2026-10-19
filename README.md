@@ -78,7 +78,9 @@ sibling order, budget truncation, token binding and themes, instance expansion, 
 and the `.fig` field semantics of 0.1.3 (auto-layout defaults, line-height units, shared styles, override breadth, variable bindings, groups, masks, transforms)
 and 0.1.4 (mixed text styles and links, uniform instance scale, blend modes, angular/diamond gradients, mask types, Display-P3, explicit modes for numbers/text,
 non-unique property definition ids, blobs before nodes), and 0.1.5 (`tests/fig-limits.test.ts`: gradient/image/emoji text ranges, stroke paint blend modes,
-auto layout under an explicit variable mode).
+auto layout under an explicit variable mode; PR review: full radii, stroke-only overrides, scaled instances under modes and their tokens, paint opacity of
+bound colours, differential re-layout, image strokes on lines), `tests/cli.test.ts` (common options before/after the command, `--max-tokens` validation,
+`node` budget).
 Manual runs against real client files (not part of this repository) and the synthetic 100/200/400 MB files: see the table above.
 An end-to-end check implemented four real frames in React and Angular (pixel-identical results, 2.8-11.6 % pixel difference to the offline design render); that material contains client assets and is kept out of this repository.
 
@@ -88,8 +90,11 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
 - .fig `screenshot` approximations: angular gradients (a fan of wedges), Figma-only blend modes `linear-burn`/`linear-dodge` (drawn as multiply/screen),
   cap-height trim (cap height taken as 0.7 × font size), a thinner stroke-weight override on an outline icon without a saved outline (drawn at the component weight),
   emoji (yellow placeholder discs: no colour emoji font offline), vector strokes are centred on the outline (Figma's inside/outside alignment is not applied to paths).
-  Auto layout under an explicit variable mode is re-solved only where the mode changes a bound gap, padding or size (children keep their saved sizes unless
-  they fill; text is not re-measured; wrapping and grid layouts keep their saved positions). Display-P3 files: images stay P3.
+  Auto layout under an explicit variable mode is re-solved only where the mode changes a bound gap, padding or size, differentially: children move by what
+  the simplified solver predicts from the size/spacing changes, so Figma's saved offsets stay where nothing changed (children keep their saved sizes unless
+  they fill; text is not re-measured; wrapping and grid layouts keep their saved positions; baseline alignment of a child whose own size changes is
+  treated as start; constraints `pin=` are applied to children outside the flow of a resized frame, rotated children by their unrotated box).
+  Display-P3 files: images stay P3.
 - `.pen` schema 2.21 is the documented reference; other versions are read with warnings (2.18 was tested).
 - Heuristics (screen detection, purpose, flows, audit) are guesses and are always marked; they exist to produce questions, not facts.
 - Client designs stay local, but AI output about them (questions, specs, generated code) has to be reviewed by a person before it is shared with a client.
@@ -123,6 +128,36 @@ An end-to-end check implemented four real frames in React and Angular (pixel-ide
     197 px three-line box); an override with another font family drops the component font's metrics; a font size under a variable mode and instance
     scale are taken into account.
   - Index schema 26 (re-ingest happens automatically).
+  - PR review fixes:
+    - Corner radii: the clamp factors come from the original radii (each corner takes the smaller factor of its two sides, CSS-like). 0.1.5 clamped
+      the radii in place side by side, so a full radius (`999`) on a square drew four different corners instead of a circle (gold-preview `1:3356`:
+      9.5/0.39/0.75/18.5 instead of 14). Affects avatars, pills, badges, toggles in `screenshot`; `spec` prints the token/number as before.
+    - Stroke-only vectors (outline icons) ignore fill overrides (paints, `fill: []`, a fill style), like shared fill styles already did: an outer
+      instance's `fill: []` no longer wipes the colour an inner owner's stroke override gave the check icon (gold-preview `1:3382`, 30 such overrides;
+      nuxtui 13 with non-empty fills).
+    - Scaled instances (`uniformScaleFactor`): the accumulated scale is carried down the evaluated tree. Mode values are multiplied by it before they
+      are compared with the (scaled) saved numbers and before they are drawn, so a scaled instance under a mode is no longer re-laid out with unscaled
+      gaps/paddings/sizes. `spec` prints tokens inside a scaled instance as `$token(8px×0.5=4px)` (token value, scale, drawn value; also font
+      sizes, whose `lh-normal(Npx)` is the scaled Figma pitch), documented in the spec header and SKILL.md. nuxtui/gold-preview specs change accordingly.
+    - Colour-bound paints with their own paint opacity print `$token(#1a1a1a)/op0.12` (CSS `color-mix(…)`) in `spec`, `tree` and `node` and are drawn at
+      that opacity. Figma copies a colour variable's alpha into the paint opacity when it binds it (material3 state layers: token `#1d1b201a`, paint
+      opacity 0.1), so the extra factor is the saved colour's alpha over the token's alpha; a plain bound paint prints no `/op` (gold-preview: 126
+      spec lines with an own paint opacity, e.g. `$theme-accent-red-4(#fecaca)/op0.2`; 35 at `/op0` = invisible paints that 0.1.5 printed as opaque).
+    - Re-layout under an explicit mode is differential: the solver runs on the saved and on the new values and every child moves by the difference,
+      so Figma's saved offsets (baseline alignment, anything the solver does not model) stay where nothing changed and following siblings shift only by
+      size deltas. Overflowing content of a `center`/`end` container gets a negative offset as in Figma; children outside the flow of a resized frame
+      follow their constraints (`MAX`, `CENTER`, `STRETCH`, `SCALE`).
+    - Image and gradient strokes on lines paint over a box at least as thick as the stroke (a horizontal line had `<pattern height="0">`: not drawn).
+    - `.pen` `lineHeight` tokens are multipliers: `lh$lh-body(1.5)` (was `1.5px`) in `spec`, `tree` and `node`.
+    - CLI: `--file`, `--json`, `--max-tokens` work before and after the command (`design-query --max-tokens 6000 node <id>`, also `--max-tokens=N`);
+      `--max-tokens` must be a positive integer (digits only, else a usage error naming the option, exit code 1; `abc`, `0`, `-5` were accepted as
+      NaN/0 budgets); `--file`/`--max-tokens` with `ingest` are rejected in either position. Nested scaled instances print `scale=0.5(total=0.25)`
+      (tokens use the total); full radius tokens (≥ half the short side, e.g. 999) print without `×F`. The differential re-layout computes every
+      shift from the saved position, so a child placed twice (fill width settled after its hug parent grew) is not shifted twice.
+    - `node` honours `--max-tokens`: its field limits (text 600, component props 300, description 160, raw JSON 700 chars, 8 interactions, 5 notes at
+      the default 2,000 tokens) grow with the budget, `raw` takes most of it; a cut field ends in `…` and a hint names the budget that shows it in full
+      (`→ raw truncated (700 of 1391 chars): node 1:1871 --max-tokens 3000`). Before, `--max-tokens 50000` printed the same cut raw JSON, cut mid-object
+      without a hint. `components` and `notes` mark their cut props/descriptions with `…` too.
 - **0.1.4** — the `.fig` findings 0.1.3 left open (same research report).
   - Mixed text styles: `characterStyleIDs` + `styleOverrideTable` become ranges (`runs[6-9 "big" w700 underline color=… link=…]` in `spec`, one
     `<tspan>` per range in `screenshot`), including each range's own text/fill style (material3 link ranges are purple via "M3/sys/light/primary",

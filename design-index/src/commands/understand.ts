@@ -151,7 +151,7 @@ export function flows(db: DatabaseSync, out: Out): void {
   }
   // derived: step sequences inside a board
   const seqs = db.prepare(`SELECT board_name, GROUP_CONCAT(node_id || ' ' || name, ' → ') s, COUNT(*) c FROM (SELECT * FROM screens ORDER BY ord) WHERE name GLOB '*[Ss]chritt [0-9]*' OR name GLOB '*[Ss]tep [0-9]*' GROUP BY board_name HAVING c >= 2`).all() as { board_name: string; s: string; c: number }[];
-  for (const sq of seqs) out.add(`  [derived] Step sequence in ${q(sq.board_name, 36)}: ${sq.s.slice(0, 300)}`);
+  for (const sq of seqs) out.add(`  [derived] Step sequence in ${q(sq.board_name, 36)}: ${sq.s.length > 300 ? sq.s.slice(0, 299) + '…' : sq.s}`);
   if (!edges.length && !flowsMap.size && !seqs.length) out.add('No derivable flows: order and linking of the screens is open and should be asked.');
   out.hint('Always ask flow questions with screen IDs; record answers in design-decisions.md.');
 }
@@ -224,7 +224,10 @@ export function notes(db: DatabaseSync, out: Out, o: { page?: number; full?: boo
     const body = o.full ? r.text.replace(/\s+/g, ' ') : r.text.replace(/\s+/g, ' ').slice(0, 360);
     if (!out.add(`[${r.kind}] ${ids.join(', ') || '-'}${s ? ` (screen ${s})` : ''}${n > 1 ? ` ×${n}` : ''}: ${body}${!o.full && r.text.length > 360 ? ' … (--full)' : ''}`, { nodes: ids, kind: r.kind, screen: s, count: n, text: r.text })) { out.skip(ordered.length); break; }
   }
-  for (const c of comps) if (!out.add(`[component] ${c.id} ${q(c.name, 30)}: ${c.description.replace(/\s+/g, ' ').slice(0, 240)}`)) break;
+  for (const c of comps) {
+    const d = c.description.replace(/\s+/g, ' ');
+    if (!out.add(`[component] ${c.id} ${q(c.name, 30)}: ${o.full || d.length <= 240 ? d : d.slice(0, 240) + ' … (--full)'}`)) break;
+  }
   if (!rows.length && !comps.length) out.add('No notes in the file. Requirements come from the user only.');
   out.hint('Notes are requirements/hints from the design authors: turn contradictory or unclear passages into questions for the user.');
 }

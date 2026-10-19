@@ -21,7 +21,8 @@ const doc = `// comment before the document
   "variables": {
     "color.primary": { "type": "color", "value": [{ "value": "#0057AB", "theme": { "mode": "light" } }, { "value": "#66AAFF", "theme": { "mode": "dark" } }] },
     "space.m": { "type": "number", "value": 16 },
-    "font.text": { "type": "string", "value": "Inter" }
+    "font.text": { "type": "string", "value": "Inter" },
+    "lh.body": { "type": "number", "value": 1.5 }
   },
   "children": [
     { "type": "frame", "id": "board", "name": "01 – Login", "x": 0, "y": 0, "width": 1600, "height": 1000, "layout": "none", "children": [
@@ -29,7 +30,7 @@ const doc = `// comment before the document
         "futureField": 42,
         "children": [
           { "type": "text", "id": "t1", "name": "Title", "content": "Willkommen", "fill": "$color.primary", "fontFamily": "Open Sans", "fontSize": 28, "fontWeight": "700", "width": "fill_container" },
-          { "type": "text", "id": "t2", "name": "Hint", "content": "Lorem ipsum", "fontFamily": "$font.text", "fontSize": 14 },
+          { "type": "text", "id": "t2", "name": "Hint", "content": "Lorem ipsum", "fontFamily": "$font.text", "fontSize": 14, "lineHeight": "$lh.body" },
           { "type": "rectangle", "id": "img1", "name": "Photo", "width": 120, "height": 80, "fill": { "type": "image", "url": "data:image/png;base64,${png.toString('base64')}", "mode": "cover" } },
           { "type": "ref", "id": "inst1", "ref": "btn", "descendants": { "btnlabel": { "content": "Anmelden" } } },
           { "type": "icon", "id": "ic1", "library": "lucide", "icon": "user", "width": 16, "height": 16 },
@@ -59,7 +60,7 @@ describe('pen ingest', () => {
     const n = (db.prepare('SELECT COUNT(*) c FROM nodes').get() as { c: number }).c;
     expect(n).toBe(10);
     expect((db.prepare("SELECT COUNT(*) c FROM components").get() as { c: number }).c).toBe(1);
-    expect((db.prepare("SELECT COUNT(*) c FROM variables").get() as { c: number }).c).toBe(3);
+    expect((db.prepare("SELECT COUNT(*) c FROM variables").get() as { c: number }).c).toBe(4);
     const warns = (db.prepare('SELECT msg FROM warnings').all() as { msg: string }[]).map((w) => w.msg).join('|');
     expect(warns).toContain('unknown field "futureField"');
     expect(warns).toContain('unknown node type "hologram"');
@@ -135,6 +136,15 @@ describe('spec, tokens, render', () => {
     const line = t.split('\n').find((l) => l.includes('"Hint"'))!;
     expect(line).toContain('font=$font-text(Inter)/14');
     expect(t).not.toContain('lh-normal');
+  });
+  it('prints a .pen lineHeight token as a multiplier (no px unit) in spec, tree and node', () => {
+    const { db } = openIndex(file);
+    const line = buildSpec(db, 'scr1', { maxTokens: 4000 }).text.split('\n').find((l) => l.includes('"Hint"'))!;
+    expect(line).toContain('font=$font-text(Inter)/14/lh$lh-body(1.5)');
+    expect(line).not.toContain('1.5px');
+    const o = out(); nodeDetail(db, o, 't2');
+    expect(text(o)).toContain('lh$lh-body(1.5)');
+    expect(text(o)).not.toContain('1.5px');
   });
   it('spec names tokens instead of hex values and lists asset paths', () => {
     const { db } = openIndex(file);

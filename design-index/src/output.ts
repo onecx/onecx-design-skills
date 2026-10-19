@@ -81,7 +81,7 @@ export function layoutStr(l: Layout | null | undefined): string {
   return p.join(' ');
 }
 
-export type NameOf = (v: string, key?: string) => string;
+export type NameOf = (v: string, key?: string, saved?: string) => string;
 const rnd = (v: number, d = 1) => { const f = 10 ** d; return Math.round(v * f) / f; };
 
 /**
@@ -111,9 +111,15 @@ export function gradientStr(p: Paint & { k: 'grad' }, w?: number | null, h?: num
   return `${p.t}-gradient(${p.stops.map((s) => color(s[0])).join('→')})`;
 }
 
+/**
+ * Paint opacity of a token-bound solid paint: `/opA` after `$name(value)` (CSS: color-mix(in srgb, var(--name) A×100%, transparent),
+ * or the value with alpha A); empty at full opacity.
+ */
+export const opSuffix = (o: number | undefined): string => (o != null && o < 1 ? `/op${Math.round(o * 1000) / 1000}` : '');
+
 export function paintStr(p: Paint, nameOf?: NameOf, w?: number | null, h?: number | null): string {
   const bm = p.bm ? `|${p.bm}` : '';
-  if (p.k === 'solid') return (p.v ? `$${nameOf ? nameOf(p.v) : p.v}` : p.c ?? '?') + bm;
+  if (p.k === 'solid') return (p.v ? `$${nameOf ? nameOf(p.v, undefined, p.c) : p.v}` : p.c ?? '?') + bm;
   if (p.k === 'grad') return gradientStr(p, w, h) + bm;
   return `img(${p.asset ?? p.url ?? '?'}${p.mode && p.mode !== 'cover' && p.mode !== 'fill' ? ',' + p.mode : ''}${p.o != null ? ',op' + p.o : ''})${bm}`;
 }
@@ -172,8 +178,9 @@ export function stylesStr(s: Styles | null | undefined, opts: { text?: boolean; 
   if (s.fx?.length) p.push(`fx=${s.fx.map((e) => (e.k === 'shadow' ? `shadow(${e.x ?? 0},${e.y ?? 0},${e.blur ?? 0}${e.c ? ',' + e.c : ''})` : `${e.k}(${e.blur ?? 0})`)).join('+')}`);
   if (s.font && opts.text !== false) {
     // .pen stores `$name` references in font fields: print them as `$name(value)` like bound variables
-    const lit = (x: unknown, k: string): unknown => (typeof x === 'string' && x.startsWith('$') && opts.nameOf ? `$${opts.nameOf(x.slice(1), k)}` : x);
-    const f = { ...s.font, f: lit(s.font.f, 'font-family') as string | undefined, s: lit(s.font.s, 'font-size') as number | string | undefined };
+    const lit = (x: unknown, k?: string): unknown => (typeof x === 'string' && x.startsWith('$') && opts.nameOf ? `$${opts.nameOf(x.slice(1), k)}` : x);
+    // .pen line height is a multiplier of the font size: its token value gets no unit
+    const f = { ...s.font, f: lit(s.font.f, 'font-family') as string | undefined, s: lit(s.font.s, 'font-size') as number | string | undefined, lh: lit(s.font.lh) as number | string | undefined };
     p.push(`font=${[f.f, f.s != null ? `${f.s}` : '', f.w != null && f.w !== 'normal' && f.w !== 400 ? `w${f.w}` : '', f.lh != null ? `lh${f.lh}` : opts.fig ? lhNormal(f) : '', f.ls != null ? lsStr(f.ls) : '', f.al, f.st, f.deco].filter((x) => x !== '' && x != null).join('/')}`);
     p.push(...textAttrs(f));
   }

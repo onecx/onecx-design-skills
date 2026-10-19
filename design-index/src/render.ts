@@ -29,6 +29,10 @@ interface R {
   chg?: boolean;
   /** size limits under the explicit mode (min/max width/height variables) */
   lim?: { minW?: number; maxW?: number; minH?: number; maxH?: number };
+  /** accumulated uniform scale of the enclosing instances (VNode.scale): saved numbers are scaled, variable values are not */
+  scale?: number;
+  /** fig: the saved layout rule (gap, padding) when an explicit mode replaced it in `l` */
+  l0?: Layout;
 }
 
 export interface RenderResult { svg: string; w: number; h: number; notes: string[]; nodes: number }
@@ -181,10 +185,12 @@ export function pathBounds(d: string): { x: number; y: number; w: number; h: num
  */
 export function roundedRect(x: number, y: number, w: number, h: number, rad: number | number[] | undefined, inset: number, extra: string, bw = w, bh = h): string {
   const f = (n: number) => String(Math.round(n * 100) / 100);
-  let rs = Array.isArray(rad) ? rad.slice(0, 4) : [rad ?? 0, rad ?? 0, rad ?? 0, rad ?? 0];
-  // per-side clamp: top (tl+tr), right (tr+br), bottom (br+bl), left (bl+tl)
+  const o = (Array.isArray(rad) ? rad.slice(0, 4) : [rad ?? 0, rad ?? 0, rad ?? 0, rad ?? 0]).map((v) => Math.max(0, numOf(v)));
+  // per-side factors from the original radii: top (tl+tr), right (tr+br), bottom (br+bl), left (bl+tl); each corner takes the
+  // smaller factor of its two sides (never clamped in place, so a full radius on a square gives four equal corners: a circle)
   const sides: [number, number, number][] = [[0, 1, bw], [1, 2, bh], [2, 3, bw], [3, 0, bh]];
-  for (const [i, j, len] of sides) { const sum = rs[i] + rs[j]; if (sum > len && sum > 0) { const k = len / sum; rs[i] = Math.min(rs[i], rs[i] * k); rs[j] = Math.min(rs[j], rs[j] * k); } }
+  const k = sides.map(([i, j, len]) => (o[i] + o[j] > len && o[i] + o[j] > 0 ? Math.max(0, len) / (o[i] + o[j]) : 1));
+  let rs = o.map((v, i) => v * Math.min(k[i], k[(i + 3) % 4]));
   rs = rs.map((v) => Math.max(0, v - inset));
   if (!rs.some((v) => v > 0)) return `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" ${extra}/>`;
   if (new Set(rs.map(f)).size === 1) return `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="${f(rs[0])}" ${extra}/>`;
@@ -225,7 +231,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     nNodes++;
     const modes = v.modes ? [...inherited, ...v.modes] : inherited;
     const row = v.row as unknown as Row;
-    const r: R = { row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0, modes };
+    const r: R = { row, l: safeJson<Layout>(row.layout) ?? {}, s: safeJson<Styles>(row.styles) ?? {}, raw: safeJson<Record<string, any>>(row.raw) ?? {}, kids: [], x: row.x ?? 0, y: row.y ?? 0, w: row.w ?? 0, h: row.h ?? 0, modes, scale: v.scale };
     if (row.type === 'path' || row.type === 'boolean' || row.type === 'polygon' || (row.type === 'ellipse' && r.raw.arc)) {
       const g = qGeom.get(v.geomKey ?? row.id) as { data: string } | undefined;
       if (g) geoms.set(row.id + (v.geomKey ?? ''), g.data);
@@ -238,7 +244,10 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   /** numbers bound to variables take their value under the explicit modes in effect (saved values are default-mode values) */
   function modeNumbers(r: R, modes: string[]): void {
     const v = r.s.vars!;
-    const num = (k: string): number | undefined => { const x = v[k] ? tokens.modeValue(v[k], modes) : undefined; return typeof x === 'number' ? x : undefined; };
+    const raw = (k: string): number | undefined => { const x = v[k] ? tokens.modeValue(v[k], modes) : undefined; return typeof x === 'number' ? x : undefined; };
+    // lengths inside a scaled instance: the variable holds the unscaled value, the saved numbers are scaled
+    const k = r.scale ?? 1;
+    const num = (key: string): number | undefined => { const x = raw(key); return x === undefined ? undefined : x * k; };
     const s = { ...r.s };
     let changed = false;
     const corners = ['r-tl', 'r-tr', 'r-br', 'r-bl'].map((k) => num(k) ?? num('radius'));
@@ -246,12 +255,17 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       const cur = Array.isArray(s.r) ? s.r : [s.r ?? 0, s.r ?? 0, s.r ?? 0, s.r ?? 0];
       s.r = corners.map((x, i) => x ?? cur[i]); changed = true;
     }
-    const op = num('opacity');
+    const op = raw('opacity');
     if (op !== undefined) { s.op = op; changed = true; }
     const sw = num('stroke-weight');
     if (sw !== undefined && s.stroke) { s.stroke = { ...s.stroke, w: sw }; changed = true; }
     const fs = num('font-size');
-    if (fs !== undefined && s.font) { s.font = { ...s.font, s: fs }; delete s.font.lpx; changed = true; }
+    if (fs !== undefined && s.font) {
+      s.font = { ...s.font, s: fs }; delete s.font.lpx; changed = true;
+      // Figma scales the unscaled Auto pitch, round(natural line height × mode size), with the instance
+      const nlh = s.font.nlh;
+      if (k !== 1 && s.font.lh == null && typeof nlh === 'number' && nlh > 0) s.font.lpx = Math.round(nlh * raw('font-size')!) * k;
+    }
     if (changed) { r.s = s; notes.add('Numbers bound to variables drawn with their value under the explicit variable mode'); }
     // auto-layout numbers and sizes: where the mode value differs from the saved one, the saved layout shows another mode
     // (instance content keeps its component's default-mode layout); fig re-lays out the container below
@@ -271,7 +285,7 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     let w = num('width') ?? r.w, h = num('height') ?? r.h;
     w = clampTo(w, lim.minW, lim.maxW); h = clampTo(h, lim.minH, lim.maxH);
     if (Math.abs(w - r.w) > 0.005 || Math.abs(h - r.h) > 0.005) { r.w = w; r.h = h; moved = true; }
-    if (moved) { r.l = l; r.dirty = true; }
+    if (moved) { r.l0 = r.l; r.l = l; r.dirty = true; }
   }
   const root = toR(vtree);
   const use = { length: nNodes };
@@ -394,10 +408,69 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
 
   // ---- fig: re-layout where an explicit variable mode changed gap, padding or size (saved geometry everywhere else) ----
   const changedBelow = (r: R): boolean => (r.chg ??= !!r.dirty || r.kids.map(changedBelow).some(Boolean));
+  const r2 = (n: number) => Math.round(n * 100) / 100;
   /**
-   * Places the flow children of an auto-layout container with its (mode) gap and padding, keeping every child's saved size unless
-   * it fills the container or a mode changed it; hug sizes are recomputed. Containers outside the changed subtrees keep Figma's
-   * saved layout. `fw`/`fh` = size forced by the parent (fill).
+   * Positions of the flow children of an auto-layout container (simplified flex solver) for a given layout, container size and
+   * child sizes. Overflowing content (negative free space) is centred / end-aligned like Figma does; spacing never goes negative.
+   * Cross axis: center/end offsets; start, baseline and stretch are placed at the start.
+   */
+  function flexPositions(l: Layout, row: boolean, W: number, H: number, sizes: { w: number; h: number }[]): [number, number][] {
+    const [pt, pr, pb, pl] = l.pad ?? [0, 0, 0, 0];
+    const spaced = l.jc === 'between' || l.jc === 'around' || l.jc === 'evenly';
+    const gap = spaced ? 0 : numOf(l.gap);
+    const n = sizes.length;
+    const ms = (k: { w: number; h: number }) => (row ? k.w : k.h), cs = (k: { w: number; h: number }) => (row ? k.h : k.w);
+    const total = sizes.reduce((a, k) => a + ms(k), 0) + gap * Math.max(0, n - 1);
+    const mainSize = row ? W - pl - pr : H - pt - pb;
+    const crossBox = row ? H - pt - pb : W - pl - pr;
+    const free = mainSize - total;
+    const leftover = spaced ? Math.max(0, free) : free;
+    let cur = row ? pl : pt, between = gap;
+    const jc = l.jc;
+    if (jc === 'center') cur += leftover / 2;
+    else if (jc === 'end') cur += leftover;
+    else if (jc === 'between' && n > 1) between = leftover / (n - 1);
+    else if (jc === 'between' && n === 1) cur += leftover / 2;
+    else if (jc === 'around' && n) { const sp = leftover / n; cur += sp / 2; between = sp; }
+    else if (jc === 'evenly' && n) { const sp = leftover / (n + 1); cur += sp; between = sp; }
+    const crossStart = row ? pt : pl;
+    return sizes.map((k) => {
+      const off = l.ai === 'center' ? (crossBox - cs(k)) / 2 : l.ai === 'end' ? crossBox - cs(k) : 0;
+      const at: [number, number] = row ? [cur, crossStart + off] : [crossStart + off, cur];
+      cur += ms(k) + between;
+      return at;
+    });
+  }
+  /** a child's new offset and size along one axis of a resized frame, by its constraint (MIN = left/top: unchanged) */
+  const pinAxis = (c: unknown, pos: number, size: number, S0: number, d: number): [number, number | undefined] => {
+    if (c === 'MAX') return [pos + d, undefined];
+    if (c === 'CENTER') return [pos + d / 2, undefined];
+    if (c === 'STRETCH') return [pos, Math.max(0, size + d)];
+    if (c === 'SCALE' && S0 > 0) { const f = (S0 + d) / S0; return [pos * f, size * f]; }
+    return [pos, undefined];
+  };
+  /** Children outside the flow (absolute children, children of a frame without auto layout) of a resized frame follow their constraints. */
+  function constrain(r: R, kids: R[]): void {
+    const W0 = numOf(r.row.w, r.w), H0 = numOf(r.row.h, r.h);
+    const dW = r.w - W0, dH = r.h - H0;
+    const moved = Math.abs(dW) > 0.005 || Math.abs(dH) > 0.005;
+    for (const k of kids) {
+      if (!moved) { if (changedBelow(k)) place(k); continue; }
+      // from the saved position and size: a child may be placed more than once, a shift must not add up
+      const [x, kw] = pinAxis(k.raw.hConstraint, numOf(k.row.x, k.x), numOf(k.row.w, k.w), W0, dW);
+      const [y, kh] = pinAxis(k.raw.vConstraint, numOf(k.row.y, k.y), numOf(k.row.h, k.h), H0, dH);
+      if (kw !== undefined || kh !== undefined || changedBelow(k)) place(k, kw, kh);
+      if (Math.abs(x - k.x) > 0.005 || Math.abs(y - k.y) > 0.005) { k.x = r2(x); k.y = r2(y); notes.add('Children outside auto layout follow their constraints where their frame was resized'); }
+    }
+  }
+  /**
+   * Re-lays out an auto-layout container below which an explicit variable mode changed gap, padding or size, differentially: the
+   * simplified flex solver runs once with the saved values (saved child sizes, the layout's saved gap/padding, the saved container
+   * size) and once with the new ones, and every flow child moves by the difference. Along an axis where nothing changed a child
+   * keeps Figma's saved offset (baseline alignment, overflow and whatever else the solver does not model stays as Figma laid it
+   * out); following siblings shift by the size deltas only. Child sizes stay saved unless they fill the container or a mode changed
+   * them; hug sizes are recomputed. Containers outside the changed subtrees keep Figma's saved layout. `fw`/`fh` = size forced by
+   * the parent (fill).
    */
   function place(r: R, fw?: number, fh?: number): void {
     let resized = false;
@@ -408,7 +481,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     if (fh != null && Math.abs(fh - r.h) > 0.005) { r.h = fh; resized = true; }
     const dir = r.l.dir;
     if (!(dir === 'row' || dir === 'col') || r.l.wrap || r.row.type === 'group' || !(changedBelow(r) || resized)) {
-      for (const k of r.kids) if (changedBelow(k)) place(k);
+      // frames without auto layout: children follow their constraints; wrap rows and groups keep their saved child positions
+      if (!dir && r.row.type !== 'group' && r.row.type !== 'boolean') constrain(r, r.kids);
+      else for (const k of r.kids) if (changedBelow(k)) place(k);
       return;
     }
     notes.add('Auto layout re-solved where an explicit variable mode changes gap, padding or size (saved layout elsewhere)');
@@ -420,6 +495,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const innerMain = hugMain ? undefined : row ? r.w - pl - pr : r.h - pt - pb;
     let innerCross = hugCross ? undefined : row ? r.h - pt - pb : r.w - pl - pr;
     const flow = r.kids.filter((k) => !k.l.abs);
+    // what Figma's saved positions were laid out with
+    const saved = flow.map((k) => ({ w: numOf(k.row.w, k.w), h: numOf(k.row.h, k.h) }));
+    const W0 = numOf(r.row.w, r.w), H0 = numOf(r.row.h, r.h);
     const mainRule = (k: R) => (row ? k.l.w : k.l.h), crossRule = (k: R) => (row ? k.l.h : k.l.w);
     const msize = (k: R) => (row ? k.w : k.h), csize = (k: R) => (row ? k.h : k.w);
     const at = (main?: number, cross?: number): [number | undefined, number | undefined] => (row ? [main, cross] : [cross, main]);
@@ -439,25 +517,11 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
     const total = flow.reduce((a, k) => a + msize(k), 0) + gap * Math.max(0, flow.length - 1);
     if (hugMain) { const m = total + (row ? pl + pr : pt + pb); if (row) r.w = clampTo(m, r.lim?.minW, r.lim?.maxW); else r.h = clampTo(m, r.lim?.minH, r.lim?.maxH); }
     if (hugCross) { const c = innerCross + (row ? pt + pb : pl + pr); if (row) r.h = clampTo(c, r.lim?.minH, r.lim?.maxH); else r.w = clampTo(c, r.lim?.minW, r.lim?.maxW); }
-    const mainSize = row ? r.w - pl - pr : r.h - pt - pb;
-    const crossBox = row ? r.h - pt - pb : r.w - pl - pr;
-    const leftover = Math.max(0, mainSize - total);
-    let cur = row ? pl : pt, between = gap;
-    const jc = r.l.jc;
-    if (jc === 'center') cur += leftover / 2;
-    else if (jc === 'end') cur += leftover;
-    else if (jc === 'between' && flow.length > 1) between = leftover / (flow.length - 1);
-    else if (jc === 'between' && flow.length === 1) cur += leftover / 2;
-    else if (jc === 'around' && flow.length) { const sp = leftover / flow.length; cur += sp / 2; between = sp; }
-    else if (jc === 'evenly' && flow.length) { const sp = leftover / (flow.length + 1); cur += sp; between = sp; }
-    const crossStart = row ? pt : pl;
-    for (const k of flow) {
-      const off = r.l.ai === 'center' ? (crossBox - csize(k)) / 2 : r.l.ai === 'end' ? crossBox - csize(k) : 0;
-      const x = row ? cur : crossStart + off, y = row ? crossStart + off : cur;
-      k.x = Math.round(x * 100) / 100; k.y = Math.round(y * 100) / 100;
-      cur += msize(k) + between;
-    }
-    for (const k of r.kids) if (k.l.abs && changedBelow(k)) place(k);
+    const before = flexPositions(r.l0 ?? r.l, row, W0, H0, saved);
+    const after = flexPositions(r.l, row, r.w, r.h, flow.map((k) => ({ w: k.w, h: k.h })));
+    // relative to the saved position: a container placed twice (hug cross size settled after its first pass) must not shift twice
+    flow.forEach((k, i) => { k.x = r2(numOf(k.row.x, k.x) + after[i][0] - before[i][0]); k.y = r2(numOf(k.row.y, k.y) + after[i][1] - before[i][1]); });
+    constrain(r, r.kids.filter((k) => k.l.abs));
   }
   if (opts.format === 'fig' && changedBelow(root)) place(root);
 
@@ -480,11 +544,14 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
   /** > 0 while drawing a mask or the layers a mask applies to */
   let maskDepth = 0;
   const colorOf = (p: Paint & { k: 'solid' }): { c: string; o: number } | undefined => {
-    let c = (p.v ? tokens.colorValue(p.v, curModes) : undefined) ?? p.c;
+    const tv = p.v ? tokens.colorValue(p.v, curModes) : undefined;
+    let c = tv ?? p.c;
     if (!c) { if (p.v) notes.add(`Token $${p.v} has no color value`); return undefined; }
     let o = 1;
     if (/^#[0-9a-f]{8}$/i.test(c)) { o = parseInt(c.slice(7, 9), 16) / 255; c = c.slice(0, 7); }
     if (p.o != null) o *= p.o;
+    // a bound paint drawn at a lower paint opacity than its token's alpha (the saved fallback colour already contains it)
+    if (p.v && tv !== undefined) o *= tokens.paintOpacity(p.v, p.c, curModes) ?? 1;
     return { c, o };
   };
 
@@ -869,7 +936,9 @@ export function renderSvg(db: DatabaseSync, id: string, opts: RenderOpts): Rende
       }
       case 'line': {
         const sw = typeof r.s.stroke?.w === 'number' ? r.s.stroke.w : 1;
-        const ps = strokePaints(r).map((p) => paintAttr(p, w, h, 'stroke')).filter((a): a is string => !!a);
+        // the paint box of a line is at least as thick as its stroke: a zero-height box would disable an image pattern
+        // (<pattern height="0">) and collapse a gradient across the line
+        const ps = strokePaints(r).map((p) => paintAttr(p, Math.max(w, sw), Math.max(h, sw), 'stroke')).filter((a): a is string => !!a);
         for (const a of ps.length ? ps : ['stroke="#000000"']) out.push(`<line x1="0" y1="0" x2="${f2(w)}" y2="${f2(h)}" ${a} stroke-width="${sw}"/>`);
         break;
       }
