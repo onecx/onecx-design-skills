@@ -13,6 +13,8 @@ Size term order is **WIDTH x HEIGHT**: `fill×hug(542)` = width fill, height hug
 | `fill` in main axis, row parent (width) | `flex:1; min-width:0` (without `min-width:0` nowrap/truncated text overflows) |
 | `fill` in main axis, col parent (height) | `flex:1; min-height:0` |
 | `fill` in cross axis of parent (`row`: height, `col`: width) | `align-self:stretch` |
+| fixed-size root (`W×H`) | exactly the spec W×H; `hug`/fixed children `flex-shrink:0`; if their sum exceeds the root, record the overflow in `design-progress.md` |
+| `hug` element | never `height`/`min-height`/`max-width`; no `margin:auto`/`max-width` unless in the spec |
 | `fill` in a parent without `row/col` | `width:100%` / `height:100%` |
 | `hug` / `hug(N)` | set NO size in that axis; N is only the value to verify. Frame `hug(W)` width in a block parent: `width:fit-content` (WRONG: `width:Wpx` / `max-width:Wpx`) |
 | text with `hug(N)` width | `white-space:nowrap` |
@@ -32,16 +34,18 @@ Size term order is **WIDTH x HEIGHT**: `fill×hug(542)` = width fill, height hug
 | `pin=right\|center-x\|left+right\|scale-x` / `bottom\|center-y\|top+bottom\|scale-y` | right/bottom: `right:(parentW-x-w)px`; `left+right`: set left and right; `center-*`: `left:50%; translate`; `scale-*`: the layer grows with the parent, but an `svg=` glyph keeps its own W×H (see icons) |
 | `r=R` / `r=tl,tr,br,bl` | `border-radius:Rpx` / `border-radius:tl tr br bl`; no `r=` = square. Same value on many boxes: ONE class or token |
 | `clip` | `overflow:hidden` |
-| `stroke=C/W/inner` | **keep the box size**: `outline:Wpx solid C; outline-offset:-Wpx` (draws above children, follows `border-radius`) or `box-shadow:inset 0 0 0 Wpx C` (frame without opaque children). Never `border` (adds 2W to the size) |
-| `stroke=C/W/center` | `outline:Wpx solid C; outline-offset:-(W/2)px` (half inside, half outside; no size change) |
+| `stroke=C/W/inner` | **keep the box size**: `outline:Wpx solid C; outline-offset:-Wpx` (draws above children, follows `border-radius`). NEVER `border` for `stroke=` (adds 2W) |
+| `stroke=C/W/center` (also `stroke=C/W` with no align) | `outline:Wpx solid C; outline-offset:-(W/2)px` (half inside, half outside; no size change) |
 | `stroke=C/W/outer` | `outline:Wpx solid C` (offset 0) |
-| `stroke=…/W/…/dashN,M` | `outline-style:dashed` (or `border-style:dashed` if the box may grow) |
+| `stroke=…/W/…/dashN,M` | `outline-style:dashed` |
 | `fx=shadow(x,y,blur[,spread],C)` | `box-shadow:xpx ypx blurpx [spreadpx] C` (colour is last); `inset-shadow(…)` = `box-shadow:inset …` |
 | `fx=blur(r)` / `bgblur(r)` | `filter:blur(r/2 px)` / `backdrop-filter:blur(r/2 px)` |
 | `fill=$a-b(#hex)` | `background:var(--a-b)` (text: `color=` -> `color:var(--a-b)`); the hex only if the token does not exist |
 | `$a-b(#hex)/op0.12` | `color-mix(in srgb, var(--a-b) 12%, transparent)` (never drop `/op`) |
+| `fill=$t+img(a.png[,contain\|crop\|tile][,opN])\|mode` | on THAT element: `background-color:var(--t); background-image:url(<imported asset>); background-size:contain; background-repeat:no-repeat; background-position:center; background-blend-mode:mode` (no mode = `cover`; `crop` = `background-size:100% 100%`; `tile` = `repeat`). Angular: file under `public/` (or `assets` per `angular.json`), referenced by its built URL. `<img>` must have naturalWidth>0 (check.mjs) |
 | `fill=linear-gradient(…)` | copy verbatim into `background:` |
 | `op=0.5` / `blend=multiply` | `opacity:.5` / `mix-blend-mode:multiply` |
+| `font=…/center` or `/right` (or `/justify`) | `text-align:center` / `right` / `justify`; absent = `start` |
 | `font=F/S/wW/lhL/lsX` | `font-size:Spx; font-weight:W; line-height; letter-spacing`; set `font-family` and `color` ONCE on the component root, children inherit. If `styles{text:"<style name>"}` is shown and grepping the token file for that style name finds text tokens, use those, else the literal numbers |
 | `font` family | `font-family: var(--<family token from spec>), system-ui, sans-serif` (WRONG: `var(--<token>, Roboto, sans-serif)`: the fallback is ignored once the token exists); install the family named in `font=` (e.g. `@fontsource/roboto` listed in the `angular.json` `styles` array, or a local file) and import only the weights used |
 | font weight | numeric from `wW` (no `w` = 400). Token values like `SemiBold` are invalid CSS: 400 Regular, 500 Medium, 600 SemiBold, 700 Bold |
@@ -69,6 +73,12 @@ Size term order is **WIDTH x HEIGHT**: `fill×hug(542)` = width fill, height hug
 - A frame with SEVERAL `svg=` children (logo) = ONE asset: `design-query assets export <id of the frame that contains the svg= lines> --out <dir>` writes `logo-<id>.svg` (all shapes combined) plus the single vectors. Use the combined file as `<img src alt="">` or inline it VERBATIM. WRONG: retyping/guessing `d=` data, using only the first path. Check: rendered shape count = number of `svg=` lines.
 
 ## 2. Procedure
+### 0. Coverage and loop (BEFORE coding)
+1. `design-query tree <id> --depth 2`: list EVERY visible node as `node-id | name | selector | status (done / skipped + reason)` in `design-progress.md` (PROJECT ROOT). Row count = number of node lines `tree` printed, excluding lines ending `(hidden)`. `pending` is not done; "IMPLEMENTED"/"Complete" only when all rows are `done`.
+2. For each depth-1 child, in order: `design-query spec <child-id>`, implement it, run its check rows (section 4), then the next. Where a spec shows "… N children", run `tree`/`spec` on that node. Never stop after the first child.
+3. No placeholders: images only from `assets export`, texts only from `text=`; no external URLs, no added copy. Layer/frame names (quoted, e.g. "Image", ".Lib/Comp") are NEVER rendered as text.
+4. Every term belongs to the element of its OWN spec line: never move a fill/stroke/radius to a parent or fake it with `inherit`; a modifier goes on the element whose line holds the differing ai/jc/gap/fill. Per `→Comp` instance diff `font=`, `gap`, `pad` term by term. Write only values the spec shows (no `w` = 400, no `gap` = none); never flatten a frame with `pad`. Text with `hug` width: no size, `nowrap`, never `flex:1`.
+
 ### A. Inventory first (before any CSS)
 1. `grep -rn "selector:" src/app` and list the component files: existing components (`app-card` ...) with their `input()`s and `ng-content` slots.
 2. Open the global stylesheet(s) (`styles.scss`, `styles/_base.scss` ...): list its utility classes (layout/surface helpers) and record them.
@@ -105,7 +115,7 @@ navigation = `a`, titles `h1-h3`, `section`/`header`.
 3. Colours/typography from tokens, declared ONCE (not per element): `font-family`+`color` on the component root; `color-mix()` for `/opA`; custom properties for everything a variant changes.
 4. Keep `<main>`/semantic elements of the base project; semantic HTML for the rest. `<button>`: `type="button"` + `font:inherit; color:inherit; border:0; background:none`; status messages `role="status"`; icon-only buttons `aria-label`.
 5. Write only properties a spec term maps to. No `hyphens`, `word-break`, `text-wrap`, `@media`, `max-width`, `transition` etc. unless the spec or `design-decisions.md` asks. `clamp()`/container queries only for implied responsiveness; nesting only if the project uses it.
-6. Tokens: the generated file contains all modes (large); the CLI has no mode option. Generate once (`design-query tokens --format css --out src/styles/tokens.generated.css`), keep that name and path, never edit/rename it, register it once as recorded in conventions.md (Vite: `src/main.tsx`; Angular CLI: `angular.json` `styles`; Nx: `project.json`); NEVER `@use` it in `styles.scss`, never edit global `styles.scss`. Components read only the tokens the spec names, via short properties (`--card-header-bg: var(--<token from spec>)`). Extra-mode `[data-…]` blocks are inert until the attribute is set.
+6. Tokens: the generated file contains all modes (large); the CLI has no mode option. Generate once (`design-query tokens --format css --out src/styles/tokens.generated.css`), keep that name and path, never edit/rename it, register it once at the location recorded in conventions.md; NEVER `@use` it in `styles.scss`, never edit global `styles.scss`. Components read only the tokens the spec names, via short properties (`--card-header-bg: var(--<token from spec>)`). Extra-mode `[data-…]` blocks are inert until the attribute is set.
 7. Roles, scope, hooks: pick a token by ROLE (page title, section heading, group heading ...) from the spec's style name, never by looks, and record the role -> token map in conventions.md. A theme/mode declares only real overrides of its base (never paste a full token block twice). Scope product-specific selectors to the owning root class; an unscoped override of a component-library class leaks into neighbouring UI (shell, micro-frontends, other design systems): check each selector's reach. Style third-party/other-module components only through documented hooks; if none exist, record the dependency on its private markup in conventions.md and verify it. Presentation lives in named style rules, never in `[style]`/`style=` for static values; inline only for genuinely dynamic values.
 
 ## 3. Worked example: frame 53379:35528 (`spec` abridged)
@@ -163,43 +173,28 @@ template: `<a class="arrow-link cluster" [href]="href()"><ng-content />
 .arrow-link__icon { flex: none; box-sizing: content-box; padding: 4px; }  // 16px glyph in 24px box
 ```
 Font: `npm i @fontsource/roboto`, add `@fontsource/roboto/400.css` and `700.css` plus `src/styles/tokens.generated.css` to the `styles` array in `angular.json`.
-Measured in Chromium (662px wide): card 662×542, header 106, body 436, link rows 28px, title x 36px, font Roboto; matches the reference.
 
 ## 4. Self-check (REQUIRED, do not finish without it)
-Serve the app (`ng build`, then serve `dist/<app>/browser` (`npx http-server dist/<app>/browser -p 4175`)), save as `check.mjs` in a scratch dir (not in the project; delete it after pasting the table), fill `EXPECT` (selector: size term of the spec), run `node check.mjs <url>` where `playwright` resolves. Paste the printed table into `design-progress.md`; fix every row that deviates.
-```js
-import { chromium } from 'playwright';
-// one entry per spec node/instance: [selector, size term from spec, expected [x,y] of the first text/child inside it (= its pad)]
-const EXPECT = [['.card', 'fill×hug(542)'], ['.card__header', 'fill×hug(106)', [36, 32]], ['h2', 'fill×hug(42)'], ['a', 'hug(110.95)×hug(28)']];
-const b = await chromium.launch(), p = await b.newPage({ viewport: { width: 1000, height: 800 } });
-await p.goto(process.argv[2]); await p.waitForTimeout(500);
-const { rows, fonts } = await p.evaluate((E) => ({ fonts: [...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family + ' ' + f.weight),
-  rows: E.flatMap(([sel, exp, off]) => [...document.querySelectorAll(sel)].length === 0 ? [{ el: sel, size: 'NOT FOUND', expect: exp }] : [...document.querySelectorAll(sel)].map((e, i) => {
-    const r = e.getBoundingClientRect(), q = document.createRange(); q.selectNodeContents(e);
-    const lines = new Set([...q.getClientRects()].map((x) => Math.round(x.top))).size;
-    const c = [...e.children][0] ?? e, cr = (c === e ? q : c).getBoundingClientRect();
-    return { el: `${sel}[${i}]`, size: `${r.width.toFixed(1)}×${r.height.toFixed(1)}`, expect: exp, parentW: e.parentElement.getBoundingClientRect().width.toFixed(1),
-      lines, firstXY: `${(cr.x - r.x).toFixed(1)},${(cr.y - r.y).toFixed(1)}`, wantXY: off ? off.join(',') : '' };
-  })) }), EXPECT);
-console.table(rows); console.log('loaded fonts:', fonts.join(', ')); await b.close();
-```
-EXPECT holds ONE entry per instance (every variant) and per button/child whose offset the spec fixes; `firstXY` = x,y of the first child (else first text) inside the element, compare it to `pad`; `lines` is meaningful for text only. Fonts: bundle the family named in the design (npm font package or local file) and import it; the declared `font-family` is no proof, `loaded fonts` is. **Finishing without the pasted table, or writing "matches exactly" over a failing row, is a failure.** Pass criteria:
+Serve the app (`npx ng serve --port 4175`). `check.mjs` ships in this skill folder: NEVER retype or copy-edit it. Needs `playwright` in the project (`npm i -D playwright && npx playwright install chromium`; a dev dependency, so ask the user first; it resolves from the project's `node_modules`).
+1. Write `expect.json` into the PROJECT ROOT (keep it, with `check-output.txt`; delete only other scratch files). One entry per coverage row with status `done` that has a selector (flattened/skipped rows need none); the coverage count excludes `tree` lines ending `(hidden)`; fewer entries = check NOT passed. ROOT included. Every `w`/`h` is copied from the spec, never from a measurement; omit `w`/`h` for `fill` and `hug`. Example: `[{"sel":".card","w":662,"h":542}, {"sel":"h2","fontWeight":"700","textAlign":"center","bg":"rgb(230, 224, 233)","bgImage":true,"texts":["Styles"]}]` (`bg` = computed `rgb(r, g, b)` text, hex converted, alpha -> `rgba(r, g, b, a)`). `texts` = every `text=` value: compared per element (`<br>`/runs fine); other on-screen text (layer name) fails, a `texts` entry not on screen fails (placeholder/value do not count).
+2. `node <skill folder>/check.mjs <url> expect.json > check-output.txt`. It prints PASS/FAIL per row (2px tolerance), `loaded fonts:`, `RESULT: N/M PASS`, exit 1 on any FAIL, NOT FOUND, stray text, `texts` entry missing, `<img>` with naturalWidth 0, or an empty expect array.
+3. Attach the WHOLE `check-output.txt` untrimmed in `design-progress.md` (project root). Never retype, shorten or add measured values, no `~`; a hand-written table is a failure. Fix every FAIL until `RESULT` is M/M.
+
 | check | expected |
 |---|---|
-| `hug(N)` height | N ±1px; `hug` width = text width (not `parentW`) |
+| `hug(N)` height | N ±2px; `hug` width = text width (not `parentW`) |
 | `fill` width | = `parentW` |
+| `RESULT` | M/M PASS (root within 2px of spec W×H; NOT FOUND = not done) |
 | first text x-offset / padding | `pad` inline value; `pad=a,b`: top = a, left = b |
 | glyph / icon box | glyph = vector W×H; icon box = frame W×H |
 | text `lines` | = number of `\n` + 1; height ≈ `hug(N)` |
 | `loaded fonts` | contains the design family and the weights used (not only system fonts) |
 | instances | every instance's root line (W×H, pad, gap) equals its row in the variant table |
 | shapes of a logo | rendered shape count = number of `svg=` lines |
-| box with stroke | size = spec `W×H` (no +2px) |
-| `grep -n 'href="#' src` | no `#<node-id>` |
+| `grep -rn 'http\|href="#\|src="data:\|url(data:' src` | no external URLs, no `#<node-id>`, no inlined `data:` images; no strings absent from `text=` |
 | role tokens | headings/controls of the same kind use the token recorded for their role in conventions.md |
 | selector reach | every new selector starts at the component/product root class; no bare library class selectors |
 | static inline style | `grep -rn '\[style\|style="' src/app`: only dynamic values |
 | document language | `<html lang>` = language of the default-rendered content |
 | semantics | navigation = `a`/router link (real `href`), actions = `button`; no inert buttons; Tab reaches them and Enter (link, button) / Space (button) activates them |
-| wrappers | every element has a design frame or a semantic reason |
-| new CSS | `grep -n 'display: *flex' <new css>`: every hit justified (containers = recorded utility + delta, or one small flex class per block); no repeated `border-radius`; typography declared once; no scratch files (`check.mjs`, `measure.mjs` ...) left in the project; `git diff --stat` shows no global/token file edited; no `::ng-deep` |
+| new CSS | `grep -n 'display: *flex' <new css>`: every hit justified (containers = recorded utility + delta, or one small flex class per block); no `border` for strokes (size = spec W×H); every element has a design frame or semantic reason; no repeated `border-radius`; typography declared once; no scratch scripts (`measure.mjs` ...) in the project; `git diff --stat` shows no global/token file edited; no `::ng-deep` |
