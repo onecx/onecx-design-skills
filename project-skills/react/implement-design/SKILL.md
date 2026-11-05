@@ -64,6 +64,7 @@ Read `design-progress.md` if it exists and continue where it stops.
 - Anything marked derived (`~`) in query output is a guess: ask the user instead of implementing it silently.
 
 ## Rules
+- Tokens by role (recorded in `conventions.md`), selectors scoped to the product root, documented styling hooks only, named style rules instead of static inline styles, and a semantics check (lang, `a` vs `button`, keyboard) next to the visual check: see `spec-to-css.md` phase C step 7 and section 4.
 - Fonts: bundle them with the project (npm font package or local files). Never rely on a CDN link: the app must render offline. Always `font-family: var(--token), <generic fallback>` and check the computed font in the browser.
 - Lines in `spec` output that start with `# hidden` or `# text value(s) not placed` are open questions: still implement every VISIBLE element and text (for a "text value not placed" put the text at the position of the slot/instance it belongs to, for example a right-aligned link row in a card) and tell the user what you assumed. Never remove visible text or elements just because they are unclear. Write each assumption and each deliberate omission into `design-progress.md`.
 - Token files of different design files must not be mixed (same variable names, different values). Load only the token file of the design you implement; if the project uses several design files, scope each token file (for example under a wrapper selector).

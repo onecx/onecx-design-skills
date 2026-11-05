@@ -106,6 +106,7 @@ navigation = `a`, titles `h1-h3`, `section`/`header`.
 4. Keep `<main>`/semantic elements of the base project; semantic HTML for the rest. `<button>`: `type="button"` + `font:inherit; color:inherit; border:0; background:none`; status messages `role="status"`; icon-only buttons `aria-label`.
 5. Write only properties a spec term maps to. No `hyphens`, `word-break`, `text-wrap`, `@media`, `max-width`, `transition` etc. unless the spec or `design-decisions.md` asks. `clamp()`/container queries only for implied responsiveness; nesting only if the project uses it.
 6. Tokens: the generated file contains all modes (large); the CLI has no mode option. Generate once (`design-query tokens --format css --out src/styles/tokens.generated.css`), keep that name and path, never edit/rename it, register it once as recorded in conventions.md (Vite: `src/main.tsx`; Angular CLI: `angular.json` `styles`; Nx: `project.json`); NEVER `@use` it in `styles.scss`, never edit global `styles.scss`. Components read only the tokens the spec names, via short properties (`--card-header-bg: var(--<token from spec>)`). Extra-mode `[data-…]` blocks are inert until the attribute is set.
+7. Roles, scope, hooks: pick a token by ROLE (page title, section heading, group heading ...) from the spec's style name, never by looks, and record the role -> token map in conventions.md. A theme/mode declares only real overrides of its base (never paste a full token block twice). Scope product-specific selectors to the owning root class; an unscoped override of a component-library class leaks into neighbouring UI (shell, micro-frontends, other design systems): check each selector's reach. Style third-party/other-module components only through documented hooks; if none exist, record the dependency on its private markup in conventions.md and verify it. Presentation lives in named style rules, never in `[style]`/`style=` for static values; inline only for genuinely dynamic values.
 
 ## 3. Worked example: frame 53379:35528 (`spec` abridged)
 ```
@@ -195,5 +196,10 @@ EXPECT holds ONE entry per instance (every variant) and per button/child whose o
 | shapes of a logo | rendered shape count = number of `svg=` lines |
 | box with stroke | size = spec `W×H` (no +2px) |
 | `grep -n 'href="#' src` | no `#<node-id>` |
+| role tokens | headings/controls of the same kind use the token recorded for their role in conventions.md |
+| selector reach | every new selector starts at the component/product root class; no bare library class selectors |
+| static inline style | `grep -rn '\[style\|style="' src/app`: only dynamic values |
+| document language | `<html lang>` = language of the default-rendered content |
+| semantics | navigation = `a`/router link (real `href`), actions = `button`; no inert buttons; Tab reaches them and Enter (link, button) / Space (button) activates them |
 | wrappers | every element has a design frame or a semantic reason |
 | new CSS | `grep -n 'display: *flex' <new css>`: every hit justified (containers = recorded utility + delta, or one small flex class per block); no repeated `border-radius`; typography declared once; no scratch files (`check.mjs`, `measure.mjs` ...) left in the project; `git diff --stat` shows no global/token file edited; no `::ng-deep` |

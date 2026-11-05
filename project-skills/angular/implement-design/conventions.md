@@ -33,6 +33,8 @@ Filled in during phase A of `spec-to-css.md` (inventory), one line per item; upd
 - Class naming scheme (BEM `block__element--modifier` or other; scoping): (not inventoried yet)
 - Where new CSS goes (component's own file; never global base files): (not inventoried yet)
 - Token naming and how components read tokens (short component-level custom properties): (not inventoried yet)
+- Role -> token map (page title, section heading, group heading, similar controls: token/style by role from the spec's style name):  (not inventoried yet)
+- Product root class / theme scope for new selectors, and any dependency on a library's or other module's private markup (what, where, how verified): (not inventoried yet)
 
 ## Deviations
 Features of the preferred style the installed version does not support, with the fallback used and the doc page checked.
