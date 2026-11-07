@@ -200,8 +200,8 @@ try {
   // 7. Topics: this page uses the app's own @onecx/integration-interface from the share scope, like the shell
   //    uses its copy. A topic object keeps its last value and gives it to topics the app creates later.
   const versions = shareScope['@onecx/integration-interface'];
-  if (!versions) throw new Error(`the app must list '@onecx/integration-interface' under shared in its module federation config `
-    + '(module-federation.config.js / webpack.config.js / vite.config.ts)');
+  if (!versions) throw new Error(`app error: the app must list '@onecx/integration-interface' under shared in its module federation config `
+    + '(module-federation.config.js / webpack.config.js / vite.config.ts). OneCX needs it shared; without it the app is broken in the shell too.');
   // an app registers exactly its own copy; with several, take the highest version
   const newest = Object.keys(versions).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
   const shared = versions[newest];

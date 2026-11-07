@@ -7,7 +7,7 @@ Verified with onecx-tenant-ui (Angular 19, libs 6), a generated Angular 21 app (
 - The app is a module federation remote. `remoteEntry.js` is an ES module with `init` and `get`; the page calls
   `init(shareScope)` with an empty object, so the app uses its own bundled Angular/React (no shell preloader needed).
   Afterwards the object holds the libraries the app shares; the page takes `@onecx/integration-interface` from it (see Topics).
-  An app that does not share that library cannot be run this way (`LOAD FAILED: the app must list ...`).
+  Not sharing it is an error in the app (OneCX needs it shared); the page stops with `LOAD FAILED: app error: ...`.
 - `get('<exposed module>')()` runs the app's bootstrap, which defines the web component (`customElements.define`). The page
   then creates the element with the attributes the shell sets: `data-style-id="<productName>|<appId>"`, `data-style-isolation`,
   `data-mfe-element` (without them the scoped PrimeNG styles do not apply).
