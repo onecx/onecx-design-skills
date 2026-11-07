@@ -26,7 +26,7 @@ The page sets `globalThis['@onecx/accelerator'].topic.useBroadcastChannel = fals
 | `permissions` | `PERMISSIONS` (from `helm/values.yaml`) | `hasPermission`, `ocx-portal-page permission=...` |
 | `permissionsRpc` | answered with `PERMISSIONS` | permission requests of slot components |
 | `isAuthenticated` | (no data) | libs 8+: every HTTP call waits for it |
-| `currentTheme` | `properties.general['primary-color']` and others | PrimeNG theme preset; crashes without `general.primary-color` |
+| `currentTheme` | `THEME = 'onecx'`: theme `default` of onecx-local-env (`onecx-data/theme/default_OneCX.json`); `'none'`: only `general.primary-color`/`secondary-color` | PrimeNG theme preset; crashes without `general.primary-color` |
 | `currentPortal` (= current workspace) | test workspace, `baseUrl: '/'` | page header, React href |
 | `configuration` | `{}` | search header and config service wait for it |
 | `currentLocation` | `{ url, isFirst }`, again after every `history.pushState/replaceState` | router sync |
@@ -35,6 +35,13 @@ The page sets `globalThis['@onecx/accelerator'].topic.useBroadcastChannel = fals
 
 Published by the app and shown by the page: `message` (toasts, logged as `app message:`), `globalError`, `currentPage`,
 `manualBreadcrumbs`, `translationCache`.
+
+## Theme
+`THEME = 'onecx'` (default for repos with a `github.com/onecx/...` remote) gives the look of the app inside OneCX:
+the properties of the OneCX default theme are published in `currentTheme` and set as CSS variables (`--primary-color`, ...),
+and the page gets the global styles of the shell (`@onecx/portal-layout-styles` `theme_defaults.scss` and the shell's
+`global-styles.scss`): Ubuntu font (bundled in `fonts/`, served at `/__onecx-test/fonts/`), 14px, body background
+`#f7f7f7`, text colour. `THEME = 'none'` is for business apps with a hardcoded theme: only the values the libs need to start.
 
 ## Other things the shell provides
 - `window.onecxAuth` and `window.onecxAngularAuth` with `authServiceProxy.v1 = { getHeaderValues, updateTokenIfNeeded }`:

@@ -133,6 +133,12 @@ function detectRoutes() {
   return [...routes].filter((r) => r && r !== '**' && !r.includes(':'))
 }
 
+// Apps of the onecx GitHub organisation get the OneCX default theme, all others a neutral one.
+function detectTheme() {
+  const git = read(path.join(REPO, '.git', 'config'))
+  return /github\.com[:/]onecx\//i.test(git) ? 'onecx' : 'none'
+}
+
 function findOpenApi() {
   const files = findFiles(path.join(REPO, 'src'), (n) => /openapi.*\.ya?ml$|swagger.*\.ya?ml$/i.test(n))
   return files.find((f) => /bff/i.test(f)) ?? files[0]
@@ -210,6 +216,7 @@ function init() {
   const openapi = findOpenApi()
   const ops = openapi ? listOperations(openapi) : []
   const apiPrefix = detectApiPrefix(framework, openapi)
+  const theme = detectTheme()
 
   const mocks = ops.map((o) => {
     const url = apiPrefix + o.path.replace(/\{[^}]+\}/g, '*')
@@ -227,6 +234,7 @@ function init() {
     .replaceAll('{{REMOTE_ENTRY}}', base.slice(1) + fed.remoteFile)
     .replaceAll('{{EXPOSED_MODULE}}', fed.exposedModule)
     .replaceAll('{{BASE}}', base)
+    .replaceAll('{{THEME}}', theme)
     .replaceAll('{{STYLES_LINK}}', styles ? `<link rel="stylesheet" href="${base}${styles}" />` : '')
     .replaceAll('{{PERMISSIONS}}', JSON.stringify(permissions))
     .replaceAll('{{MOCKS}}', mocks.join('\n'))
@@ -236,7 +244,12 @@ function init() {
   fs.mkdirSync(dir, { recursive: true })
   const testHtml = path.join(dir, 'test.html')
   const block = /\/\* =+ EDIT HERE =+ \*\/[\s\S]*?\/\* =+ END EDIT HERE =+ \*\//
-  const previous = read(testHtml).match(block)?.[0]
+  let previous = read(testHtml).match(block)?.[0]
+  // a test page from an older skill version has no THEME setting yet: take it over from the new page
+  if (previous && !/const THEME\b/.test(previous)) {
+    const themeLines = html.match(/\n\/\/ Look of the page[\s\S]*?const THEME = '[a-z]+';\n/)?.[0] ?? ''
+    previous = previous.replace(/\/\* =+ END EDIT HERE/, (end) => themeLines + '\n' + end)
+  }
   if (previous && !args.includes('--reset')) {
     fs.writeFileSync(testHtml, html.replace(block, () => previous))
     console.log('Kept your PERMISSIONS, LOCALE and MOCKS from the existing test page ("init --reset" starts from scratch).')
@@ -250,6 +263,7 @@ function init() {
 
   console.log(`Detected (${framework}):`)
   for (const [k, v] of Object.entries(config)) console.log(`  ${k}: ${v}`)
+  console.log(`  theme: ${theme} (${theme === 'onecx' ? 'OneCX default theme: repo of the onecx GitHub organisation' : 'neutral: the app\'s own styles decide'}; change THEME in the test page)`)
   console.log(`  permissions: ${permissions.join(', ') || '(none found in helm/values.yaml: add them to PERMISSIONS in the test page)'}`)
   const routes = detectRoutes()
   console.log(`\nTest page: ${testHtml} (served at http://localhost:${port}${MOUNT})`)
@@ -291,6 +305,10 @@ function serve() {
     const send = (status, type, body) => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
       res.end(body)
+    }
+    if (p.startsWith('/__onecx-test/fonts/')) {
+      const font = path.join(SKILL_DIR, 'fonts', path.basename(p))
+      return fs.existsSync(font) ? send(200, 'font/woff2', fs.readFileSync(font)) : send(404, 'text/plain', 'not found')
     }
     if (p === '/' || p === MOUNT + '/') {
       res.writeHead(302, { location: MOUNT + url.search })

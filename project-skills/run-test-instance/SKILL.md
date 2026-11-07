@@ -42,6 +42,8 @@ so the app repo stays unchanged: change app code only for the feature you work o
 - Entries with `body: null` stay `null` (no body, or an image: the app shows its default image).
 - Error case: set `status` of that entry to `400` or `500`.
 - Missing permission: remove it from `PERMISSIONS`. German texts: `LOCALE = 'de'`.
+- Look: `init` sets `THEME = 'onecx'` (OneCX default theme) for repos of the onecx GitHub organisation, otherwise
+  `THEME = 'none'` (the app's own styles only). Change it only when the user asks for the other look.
 - Run `T init` again after a build whenever you like: it keeps your `PERMISSIONS`, `LOCALE` and `MOCKS`.
 
 ## Problems and fixes

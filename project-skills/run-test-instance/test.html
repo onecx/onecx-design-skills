@@ -10,7 +10,7 @@
 <base href="/" />
 {{STYLES_LINK}}
 <style>
-  body { margin: 0; padding: 16px; font-family: Arial, sans-serif; }
+  body { margin: 0; padding: 16px; }
   /* screen-reader-only helpers the shell's layout CSS normally hides */
   .cdk-visually-hidden, .p-hidden-accessible, .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   #onecx-test-toasts { position: fixed; top: 8px; right: 8px; z-index: 99999; font: 13px Arial, sans-serif; }
@@ -24,6 +24,11 @@ const PERMISSIONS = {{PERMISSIONS}};
 
 // Language of the current user: 'en' or 'de'.
 const LOCALE = 'en';
+
+// Look of the page around the app:
+//   'onecx' = OneCX default theme, font and page styles of the shell (apps of the onecx GitHub organisation)
+//   'none'  = neutral colours only; the app's own styles decide (business apps with a hardcoded theme)
+const THEME = '{{THEME}}';
 
 // BFF mocks. One entry per request the app makes.
 //   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -63,16 +68,39 @@ document.createElementFromPrimeNg = createEl;
 document.createElementFromMaterial = createEl;
 document.createOnecxDynamicContainer = (tag) => { const c = document.createElement(tag); document.body.appendChild(c); return c; };
 
-// 3. Topic values the shell would publish.
-const THEME_PROPERTIES = {
-  general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257', 'text-color': '#212529', 'text-secondary-color': '#6C757D',
-             'body-bg-color': '#FFFFFF', 'content-bg-color': '#F8F9FA', 'hover-bg-color': '#E9ECEF', 'danger-color': '#D9534F' },
-  font: { 'font-family': 'Arial, sans-serif', 'font-size': '14px' },
-  topbar: { 'topbar-bg-color': '#274B5F', 'topbar-item-text-color': '#FFFFFF', 'topbar-text-color': '#FFFFFF' },
-  sidebar: { 'menu-text-color': '#212529', 'menu-bg-color': '#FFFFFF' }
+// 3. Theme. 'onecx' = theme "default" of onecx-local-env (onecx-data/theme/default_OneCX.json) plus the global styles
+//    the shell puts on the page (@onecx/portal-layout-styles theme_defaults.scss, shell global-styles.scss).
+const THEME_NAME = typeof THEME === 'undefined' ? '{{THEME}}' : THEME;
+const THEMES = {
+  onecx: {
+    font: {},
+    topbar: { 'topbar-bg-color': '#0D3650', 'topbar-item-text-color': '#ffffff', 'topbar-text-color': '#ffffff', 'topbar-left-bg-color': '#0D3650',
+              'topbar-item-text-hover-bg-color': 'rgba(255, 255, 255, 0.12)', 'topbar-menu-button-bg-color': 'rgb(255 0 68)',
+              'topbar-menu-button-text-color': '#ffffff', 'logo-color': '#ffffff' },
+    general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257', 'text-color': 'rgba(0, 0, 0, 0.87)', 'text-secondary-color': '#262626',
+               'body-bg-color': '#f7f7f7', 'content-bg-color': '#ffffff', 'content-alt-bg-color': '#ffffff', 'overlay-content-bg-color': '#ffffff',
+               'hover-bg-color': '#ad1457', 'solid-surface-text-color': '#ffffff', 'divider-color': '#e4e4e4', 'button-hover-bg': '#ad1457',
+               'danger-button-bg': '#D32F2F', 'info-message-bg': '#b3e5fc', 'success-message-bg': '#c8e6c9', 'warning-message-bg': '#ffecb3',
+               'error-message-bg': '#ffcdd2' },
+    sidebar: { 'menu-text-color': '#274B5F', 'menu-bg-color': '#fdfeff', 'menu-item-text-color': '#515c66', 'menu-item-hover-bg-color': '#e4e4e4',
+               'menu-active-item-text-color': '#515c66', 'menu-active-item-bg-color': 'rgba(0, 0, 0, 0.04)', 'inline-menu-border-color': '#e4e4e4' }
+  },
+  // only what the libs need to start (general.primary-color is mandatory)
+  none: { general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257' } }
 };
+const THEME_PROPERTIES = THEMES[THEME_NAME] ?? THEMES.none;
 for (const group of Object.values(THEME_PROPERTIES))
   for (const [k, v] of Object.entries(group)) document.documentElement.style.setProperty('--' + k, v);
+if (THEME_NAME === 'onecx') {
+  const fonts = [300, 400, 500, 700].map((w) =>
+    `@font-face { font-family: 'Ubuntu'; font-style: normal; font-weight: ${w}; font-display: swap; src: url(/__onecx-test/fonts/ubuntu-${w}.woff2) format('woff2'); }`);
+  document.head.insertAdjacentHTML('beforeend', `<style id="onecx-test-theme">${fonts.join('\n')}
+    :root { font-size: 14px; }
+    body { font-family: Ubuntu, Helvetica Neue Light, Helvetica Neue, Helvetica, Arial, Lucida Grande, sans-serif;
+           background-color: var(--body-bg-color); color: var(--text-color); }
+    body a { text-decoration: none; color: var(--text-secondary-color); }
+  </style>`);
+}
 
 const TOPICS = {
   currentMfe: { appId: TEST.appId, productName: TEST.productName, remoteBaseUrl: location.origin + '{{BASE}}', baseHref: TEST.mountPath,
@@ -87,7 +115,7 @@ const TOPICS = {
   configuration: {},
   currentPortal: { workspaceName: 'test-workspace', portalName: 'test-workspace', displayName: 'Test Workspace', baseUrl: '/',
                    homePage: '/', microfrontendRegistrations: [], routes: [] },
-  currentTheme: { name: 'test-theme', properties: THEME_PROPERTIES },
+  currentTheme: { name: THEME_NAME === 'onecx' ? 'default' : 'test-theme', displayName: THEME_NAME === 'onecx' ? 'OneCX' : 'Test', properties: THEME_PROPERTIES },
   currentLocation: { url: location.pathname + location.search + location.hash, isFirst: true },
   remoteComponentsInfo: { components: [], slots: [] },
   parameters: { parameters: [] },
