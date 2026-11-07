@@ -200,16 +200,25 @@ try {
   // 7. Topics: this page uses the app's own @onecx/integration-interface from the share scope, like the shell
   //    uses its copy. A topic object keeps its last value and gives it to topics the app creates later.
   const versions = shareScope['@onecx/integration-interface'];
-  if (!versions) throw new Error('the app does not share @onecx/integration-interface (shared in its module federation config)');
-  const shared = Object.values(versions)[0];
+  if (!versions) throw new Error(`the app must list '@onecx/integration-interface' under shared in its module federation config `
+    + '(module-federation.config.js / webpack.config.js / vite.config.ts)');
+  // an app registers exactly its own copy; with several, take the highest version
+  const newest = Object.keys(versions).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
+  const shared = versions[newest];
   const loaded = await shared.get();
   const lib = typeof loaded === 'function' ? loaded() : loaded;
-  const topic = (cls) => (lib[cls] ? new lib[cls]() : (log('this library version has no', cls), undefined));
+  // One object per topic class. Keep them: they hold the values and answer topics the app creates later.
+  const topics = new Map();
+  const topic = (cls) => {
+    if (!topics.has(cls)) topics.set(cls, lib[cls] ? new lib[cls]() : (log('this library version has no', cls), undefined));
+    return topics.get(cls);
+  };
 
+  const PERMISSION_LIST = Array.isArray(PERMISSIONS) ? PERMISSIONS : (console.error('[onecx-test] PERMISSIONS must be a list like ["BOOK#SEARCH"]'), []);
   await Promise.all(Object.entries(TOPICS).map(([cls, value]) => topic(cls)?.publish(value)));
 
   const permissionsRpc = topic('PermissionsRpcTopic');
-  permissionsRpc?.subscribe((m) => { if (m && m.permissions === undefined) permissionsRpc.publish({ ...m, permissions: PERMISSIONS }); });
+  permissionsRpc?.subscribe((m) => { if (m && m.permissions === undefined) permissionsRpc.publish({ ...m, permissions: PERMISSION_LIST }); });
   topic('MessageTopic')?.subscribe((m) => {
     log('app message:', m?.severity, m?.summary ?? m?.summaryKey, m?.detail ?? '');
     const d = document.createElement('div');
@@ -220,17 +229,17 @@ try {
   topic('GlobalErrorTopic')?.subscribe((e) => console.error('[onecx-test] app globalError:', e));
 
   // /test and every path below it belong to the app: tell the app about navigations like the shell does.
-  const location$ = topic('CurrentLocationTopic');
+  const currentLocation$ = topic('CurrentLocationTopic');
   const currentUrl = () => location.pathname + location.search + location.hash;
   for (const fn of ['pushState', 'replaceState']) {
     const orig = history[fn];
     history[fn] = function (state, ...rest) {
       const r = orig.call(this, state, ...rest);
-      if (!state?.isRouterSync) location$?.publish({ url: currentUrl(), isFirst: false });
+      if (!state?.isRouterSync) currentLocation$?.publish({ url: currentUrl(), isFirst: false });
       return r;
     };
   }
-  window.addEventListener('popstate', () => location$?.publish({ url: currentUrl(), isFirst: false }));
+  window.addEventListener('popstate', () => currentLocation$?.publish({ url: currentUrl(), isFirst: false }));
 
   // 8. Run the app's bootstrap, then put the web component into the page.
   const factory = await container.get(TEST.exposedModule);

@@ -54,6 +54,7 @@ so the app repo stays unchanged: change app code only for the feature you work o
 | `NO MOCK for POST /bff/books/search` | Add a `MOCKS` entry with exactly this method and url. |
 | `TypeError: Cannot read properties of undefined (reading 'x')` | A mock body misses a field the app reads. Compare that body with its schema; add the missing field. |
 | `app message: error ...` | The app shows an error toast, usually because a mock is missing or has the wrong shape. Fix that mock. |
+| `LOAD FAILED: the app must list '@onecx/integration-interface' under shared ...` | Tell the user: the app's module federation config does not share that library, so the test page cannot reach the app's topics. |
 | `App loaded: NO`, `LOAD FAILED` or `HTTP 404 /<file>.js` | Build again (step 1), then `T init`, then check again. |
 | `HTTP 404 /__onecx-test/fonts/...` | The `fonts/` folder of the skill is missing: copy it, or set `THEME = 'none'`. |
 | `Cannot open http://localhost:<port>/test` | The server is not running: step 4. |
