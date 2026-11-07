@@ -11,6 +11,7 @@ import path from 'node:path'
 import http from 'node:http'
 import os from 'node:os'
 import { createRequire } from 'node:module'
+import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -134,9 +135,13 @@ function detectRoutes() {
 }
 
 // Apps of the onecx GitHub organisation get the OneCX default theme, all others a neutral one.
+// Asks git (works in worktrees and submodules, where .git is a file); any remote counts, e.g. upstream of a fork.
 function detectTheme() {
-  const git = read(path.join(REPO, '.git', 'config'))
-  return /github\.com[:/]onecx\//i.test(git) ? 'onecx' : 'none'
+  let remotes = ''
+  try {
+    remotes = execSync('git config --get-regexp "^remote\\..*\\.url$"', { cwd: REPO, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+  } catch { /* no git or no remote */ }
+  return /github\.com[:/]onecx\//i.test(remotes) ? 'onecx' : 'none'
 }
 
 function findOpenApi() {
@@ -252,7 +257,7 @@ function init() {
   }
   if (previous && !args.includes('--reset')) {
     fs.writeFileSync(testHtml, html.replace(block, () => previous))
-    console.log('Kept your PERMISSIONS, LOCALE and MOCKS from the existing test page ("init --reset" starts from scratch).')
+    console.log('Kept your PERMISSIONS, LOCALE, THEME and MOCKS from the existing test page ("init --reset" starts from scratch).')
   } else {
     fs.writeFileSync(testHtml, html)
   }
@@ -263,7 +268,8 @@ function init() {
 
   console.log(`Detected (${framework}):`)
   for (const [k, v] of Object.entries(config)) console.log(`  ${k}: ${v}`)
-  console.log(`  theme: ${theme} (${theme === 'onecx' ? 'OneCX default theme: repo of the onecx GitHub organisation' : 'neutral: the app\'s own styles decide'}; change THEME in the test page)`)
+  const usedTheme = read(testHtml).match(/const THEME = '([^']*)'/)?.[1] ?? theme
+  console.log(`  theme: ${usedTheme} (${usedTheme === 'onecx' ? 'OneCX default theme' : 'neutral: the app\'s own styles decide'}; ${usedTheme === theme ? `default for this repo` : `kept from the test page, default for this repo is ${theme}`}; change THEME in the test page)`)
   console.log(`  permissions: ${permissions.join(', ') || '(none found in helm/values.yaml: add them to PERMISSIONS in the test page)'}`)
   const routes = detectRoutes()
   console.log(`\nTest page: ${testHtml} (served at http://localhost:${port}${MOUNT})`)
@@ -307,8 +313,14 @@ function serve() {
       res.end(body)
     }
     if (p.startsWith('/__onecx-test/fonts/')) {
-      const font = path.join(SKILL_DIR, 'fonts', path.basename(p))
-      return fs.existsSync(font) ? send(200, 'font/woff2', fs.readFileSync(font)) : send(404, 'text/plain', 'not found')
+      const name = path.basename(p)
+      const font = path.join(SKILL_DIR, 'fonts', name)
+      if (!/^ubuntu-\d{3}\.woff2$/.test(name) || !fs.existsSync(font)) {
+        console.log(`Font ${name} missing: copy the fonts/ folder of the skill, or set THEME = 'none' in the test page.`)
+        return send(404, 'text/plain', 'font missing: copy the fonts/ folder of the skill')
+      }
+      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'max-age=86400' })
+      return res.end(fs.readFileSync(font))
     }
     if (p === '/' || p === MOUNT + '/') {
       res.writeHead(302, { location: MOUNT + url.search })

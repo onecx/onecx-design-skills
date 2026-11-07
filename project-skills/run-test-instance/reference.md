@@ -37,11 +37,11 @@ Published by the app and shown by the page: `message` (toasts, logged as `app me
 `manualBreadcrumbs`, `translationCache`.
 
 ## Theme
-`THEME = 'onecx'` (default for repos with a `github.com/onecx/...` remote) gives the look of the app inside OneCX:
+`THEME = 'onecx'` (default when any git remote, e.g. `origin` or the `upstream` of a fork, is `github.com/onecx/...`) gives the look of the app inside OneCX:
 the properties of the OneCX default theme are published in `currentTheme` and set as CSS variables (`--primary-color`, ...),
 and the page gets the global styles of the shell (`@onecx/portal-layout-styles` `theme_defaults.scss` and the shell's
 `global-styles.scss`): Ubuntu font (bundled in `fonts/`, served at `/__onecx-test/fonts/`), 14px, body background
-`#f7f7f7`, text colour. `THEME = 'none'` is for business apps with a hardcoded theme: only the values the libs need to start.
+`#f7f7f7`, text colour. `THEME = 'none'` is for business apps with a hardcoded theme: only the values the libs need to start and Arial as page font.
 
 ## Other things the shell provides
 - `window.onecxAuth` and `window.onecxAngularAuth` with `authServiceProxy.v1 = { getHeaderValues, updateTokenIfNeeded }`:

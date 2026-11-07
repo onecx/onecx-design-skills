@@ -42,9 +42,10 @@ so the app repo stays unchanged: change app code only for the feature you work o
 - Entries with `body: null` stay `null` (no body, or an image: the app shows its default image).
 - Error case: set `status` of that entry to `400` or `500`.
 - Missing permission: remove it from `PERMISSIONS`. German texts: `LOCALE = 'de'`.
-- Look: `init` sets `THEME = 'onecx'` (OneCX default theme) for repos of the onecx GitHub organisation, otherwise
+- Look: `init` sets `THEME = 'onecx'` (OneCX default theme) when a git remote points to github.com/onecx/ (also the
+  upstream of a fork), otherwise
   `THEME = 'none'` (the app's own styles only). Change it only when the user asks for the other look.
-- Run `T init` again after a build whenever you like: it keeps your `PERMISSIONS`, `LOCALE` and `MOCKS`.
+- Run `T init` again after a build whenever you like: it keeps your `PERMISSIONS`, `LOCALE`, `THEME` and `MOCKS`.
 
 ## Problems and fixes
 
@@ -54,6 +55,7 @@ so the app repo stays unchanged: change app code only for the feature you work o
 | `TypeError: Cannot read properties of undefined (reading 'x')` | A mock body misses a field the app reads. Compare that body with its schema; add the missing field. |
 | `app message: error ...` | The app shows an error toast, usually because a mock is missing or has the wrong shape. Fix that mock. |
 | `App loaded: NO`, `LOAD FAILED` or `HTTP 404 /<file>.js` | Build again (step 1), then `T init`, then check again. |
+| `HTTP 404 /__onecx-test/fonts/...` | The `fonts/` folder of the skill is missing: copy it, or set `THEME = 'none'`. |
 | `Cannot open http://localhost:<port>/test` | The server is not running: step 4. |
 | `Playwright is not installed` | Run the two install commands it prints. They install into the work folder, not into the app. |
 | `the app shows no text on this page` | Check a route from the line `Other pages` of `init`. |

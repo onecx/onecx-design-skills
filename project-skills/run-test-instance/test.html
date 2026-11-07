@@ -10,7 +10,7 @@
 <base href="/" />
 {{STYLES_LINK}}
 <style>
-  body { margin: 0; padding: 16px; }
+  body { margin: 0; padding: 16px; font-family: Arial, Helvetica, sans-serif; } /* 'onecx' replaces the font */
   /* screen-reader-only helpers the shell's layout CSS normally hides */
   .cdk-visually-hidden, .p-hidden-accessible, .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   #onecx-test-toasts { position: fixed; top: 8px; right: 8px; z-index: 99999; font: 13px Arial, sans-serif; }
@@ -27,7 +27,7 @@ const LOCALE = 'en';
 
 // Look of the page around the app:
 //   'onecx' = OneCX default theme, font and page styles of the shell (apps of the onecx GitHub organisation)
-//   'none'  = neutral colours only; the app's own styles decide (business apps with a hardcoded theme)
+//   'none'  = neutral: Arial and the app's own styles (business apps with a hardcoded theme)
 const THEME = '{{THEME}}';
 
 // BFF mocks. One entry per request the app makes.
@@ -70,7 +70,7 @@ document.createOnecxDynamicContainer = (tag) => { const c = document.createEleme
 
 // 3. Theme. 'onecx' = theme "default" of onecx-local-env (onecx-data/theme/default_OneCX.json) plus the global styles
 //    the shell puts on the page (@onecx/portal-layout-styles theme_defaults.scss, shell global-styles.scss).
-const THEME_NAME = typeof THEME === 'undefined' ? '{{THEME}}' : THEME;
+const THEME_NAME = String(typeof THEME === 'undefined' ? '{{THEME}}' : THEME).trim().toLowerCase();
 const THEMES = {
   onecx: {
     font: {},
@@ -88,6 +88,7 @@ const THEMES = {
   // only what the libs need to start (general.primary-color is mandatory)
   none: { general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257' } }
 };
+if (!THEMES[THEME_NAME]) console.error(`[onecx-test] THEME = '${THEME_NAME}' is unknown: use 'onecx' or 'none'`);
 const THEME_PROPERTIES = THEMES[THEME_NAME] ?? THEMES.none;
 for (const group of Object.values(THEME_PROPERTIES))
   for (const [k, v] of Object.entries(group)) document.documentElement.style.setProperty('--' + k, v);
