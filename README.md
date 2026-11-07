@@ -7,6 +7,7 @@ Skill system that lets an AI agent with a small context window (250k tokens) **r
 design-index/             global, framework-neutral skill: CLI `design-query` + SKILL.md + references/
 project-skills/react/     copy into <react-repo>/.claude/skills/implement-design/
 project-skills/angular/   copy into <angular-repo>/.claude/skills/implement-design/
+project-skills/compare-design/  copy into <app-repo>/.claude/skills/compare-design/ (checks a running app against a design, no pictures needed)
 ```
 
 All skill text is English. The project skills only use the `design-query` command, never a path into `design-index`.
