@@ -19,8 +19,10 @@ so the app repo stays unchanged: change app code only for the feature you work o
    Done when it prints `Test page: <file>` and the list `BFF operations`. If it prints `ERROR`, do what the error text says.
 3. **Mock data.** Open the test page file printed by `init`. Edit only the part between `EDIT HERE` and `END EDIT HERE`.
    `init` wrote one `MOCKS` entry per BFF operation; its comment names the response schema (`// searchBooks -> SearchBookResponse`).
-   For every entry with `body: {}` or `body: []`: look up that schema under `components:` → `schemas:` in the openapi file
-   printed by `init` and replace the body with data of exactly that shape (rules below).
+   For every entry with `body: {}` or `body: []`, find its schema in the openapi file printed by `init` and replace the
+   body with data of exactly that shape (rules below):
+   - `-> Name`: under `components:` → `schemas:` → `Name` (or `components:` → `responses:` → `Name`).
+   - `-> schema written inline in the openapi path`: under `paths:` → that url → method → `responses:` → the status.
    Done when no `body: {}` and no `body: []` is left.
 4. **Serve.** Start `T serve` as a background process; it keeps running.
    Done when it prints `Test page: http://localhost:<port>/test` (also when it says the server is already running).
@@ -39,7 +41,8 @@ so the app repo stays unchanged: change app code only for the feature you work o
 - Lists: 3 to 5 items with different, realistic values. Page results: `totalElements` equals the number of items.
 - An id that a list returns also works for the detail url of that item (`/bff/books/*` matches `/bff/books/b1`).
 - Dates as ISO strings (`2026-01-31T10:00:00Z`). Enum fields only with values listed in the schema.
-- Entries with `body: null` stay `null` (no body, or an image: the app shows its default image).
+- Entries with `body: null` stay `null` (no body, or an image: status 404 shows the app's default image, status 200
+  shows an empty image).
 - Error case: set `status` of that entry to `400` or `500`.
 - Missing permission: remove it from `PERMISSIONS`. German texts: `LOCALE = 'de'`.
 - Look: `init` sets `THEME = 'onecx'` (OneCX default theme) when a git remote points to github.com/onecx/ (also the

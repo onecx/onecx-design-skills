@@ -9,6 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import http from 'node:http'
+import vm from 'node:vm'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import { execSync } from 'node:child_process'
@@ -16,7 +17,8 @@ import { fileURLToPath } from 'node:url'
 
 const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url))
 const REPO = process.cwd()
-const WORK_ROOT = path.join(os.tmpdir(), 'onecx-test')
+// per user (not the shared /tmp): other users must not be able to plant files that check would load
+const WORK_ROOT = path.join(os.homedir(), '.cache', 'onecx-test')
 const MOUNT = '/test' // no trailing slash: the Angular router does not match 'test/'
 // Every app gets its own port (4300-4499) so several apps can be tested at the same time.
 const portFor = (appId) => 4300 + [...appId].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 200, 7)
@@ -249,12 +251,7 @@ function init() {
   fs.mkdirSync(dir, { recursive: true })
   const testHtml = path.join(dir, 'test.html')
   const block = /\/\* =+ EDIT HERE =+ \*\/[\s\S]*?\/\* =+ END EDIT HERE =+ \*\//
-  let previous = read(testHtml).match(block)?.[0]
-  // a test page from an older skill version has no THEME setting yet: take it over from the new page
-  if (previous && !/const THEME\b/.test(previous)) {
-    const themeLines = html.match(/\n\/\/ Look of the page[\s\S]*?const THEME = '[a-z]+';\n/)?.[0] ?? ''
-    previous = previous.replace(/\/\* =+ END EDIT HERE/, (end) => themeLines + '\n' + end)
-  }
+  const previous = read(testHtml).match(block)?.[0]
   if (previous && !args.includes('--reset')) {
     fs.writeFileSync(testHtml, html.replace(block, () => previous))
     console.log('Kept your PERMISSIONS, LOCALE, THEME and MOCKS from the existing test page ("init --reset" starts from scratch).')
@@ -268,7 +265,7 @@ function init() {
 
   console.log(`Detected (${framework}):`)
   for (const [k, v] of Object.entries(config)) console.log(`  ${k}: ${v}`)
-  const usedTheme = read(testHtml).match(/const THEME = '([^']*)'/)?.[1] ?? theme
+  const usedTheme = read(testHtml).match(/const THEME = ['"]([^'"]*)['"]/)?.[1]?.trim().toLowerCase() ?? theme
   console.log(`  theme: ${usedTheme} (${usedTheme === 'onecx' ? 'OneCX default theme' : 'neutral: the app\'s own styles decide'}; ${usedTheme === theme ? `default for this repo` : `kept from the test page, default for this repo is ${theme}`}; change THEME in the test page)`)
   console.log(`  permissions: ${permissions.join(', ') || '(none found in helm/values.yaml: add them to PERMISSIONS in the test page)'}`)
   const routes = detectRoutes()
@@ -284,6 +281,26 @@ function init() {
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2',
   '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject', '.map': 'application/json', '.wasm': 'application/wasm' }
+
+const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')
+
+// The MOCKS of the test page (EDIT HERE block), for requests that reach the server.
+function serverMocks(testHtml) {
+  const block = read(testHtml).match(/\/\* =+ EDIT HERE =+ \*\/([\s\S]*?)\/\* =+ END EDIT HERE =+ \*\//)?.[1] ?? ''
+  try {
+    return vm.runInNewContext(block + '\n;MOCKS', {}, { timeout: 1000 }) ?? []
+  } catch (e) {
+    console.log(`The EDIT HERE block of the test page has an error: ${e.message}`)
+    return []
+  }
+}
+
+// Same rule as in the test page: method equal, '*' = one path part, server name and query ignored.
+function mockMatches(mock, method, pathname) {
+  const pattern = new URL(String(mock.url).split('?')[0], 'http://x').pathname
+  const re = new RegExp('^' + pattern.split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]+') + '$')
+  return String(mock.method).toUpperCase() === method.toUpperCase() && re.test(pathname)
+}
 
 function serve() {
   const first = loadConfig()
@@ -303,7 +320,7 @@ function serve() {
     const url = new URL(req.url, 'http://localhost')
     let p = decodeURIComponent(url.pathname) // throws on bad % sequences: answered with 500 above
     if (p === '/__onecx-test') return res.end(c.appId)
-    if (p === '/__onecx-test/stop') {
+    if (p === '/__onecx-test/stop' && req.method === 'POST' && req.headers['x-onecx-test'] === 'stop') {
       res.end('stopped')
       console.log('Stopped by "stop".')
       return setTimeout(() => process.exit(0), 50)
@@ -322,6 +339,7 @@ function serve() {
       res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'max-age=86400' })
       return res.end(fs.readFileSync(font))
     }
+    if (p.startsWith('/__onecx-test')) return send(404, 'text/plain', 'not found')
     if (p === '/' || p === MOUNT + '/') {
       res.writeHead(302, { location: MOUNT + url.search })
       return res.end()
@@ -336,8 +354,18 @@ function serve() {
       return send(200, TYPES[path.extname(file)] ?? 'application/octet-stream', fs.readFileSync(file))
     }
     if (/\.[a-z0-9]+$/i.test(p) && !p.includes('/bff/')) return send(404, 'text/plain', 'not found: ' + p)
+    // Requests the page cannot patch (<img src>, links) reach the server: answer them from MOCKS too.
+    const mock = serverMocks(c.testHtml).find((m) => mockMatches(m, req.method, url.pathname))
+    if (mock) {
+      const empty = mock.body == null
+      // an image url with a 2xx mock but no body gets a 1x1 transparent PNG
+      const body = empty ? (mock.status < 300 ? PIXEL : '') : typeof mock.body === 'string' ? mock.body : JSON.stringify(mock.body)
+      res.writeHead(mock.status, { 'content-type': empty && mock.status < 300 ? 'image/png' : 'application/json', 'cache-control': 'no-store', 'x-onecx-test': 'mock' })
+      return res.end(body)
+    }
     console.log(`NO MOCK: ${req.method} ${url.pathname} (add it to MOCKS in the test page)`)
-    return send(501, 'application/json', JSON.stringify({ error: 'NO MOCK', method: req.method, path: url.pathname }))
+    res.writeHead(501, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-onecx-test': 'no-mock' })
+    return res.end(JSON.stringify({ error: 'NO MOCK', method: req.method, path: url.pathname }))
   }
   server.on('error', async (e) => {
     if (e.code !== 'EADDRINUSE') fail(e.message)
@@ -348,7 +376,7 @@ function serve() {
     }
     fail(`Port ${port} is used by another program. Run "init --port <other port>", then serve again.`)
   })
-  server.listen(port, () => {
+  server.listen(port, '127.0.0.1', () => {
     console.log(`Serving ${first.distDir} under ${first.base}`)
     console.log(`Test page: http://localhost:${port}${MOUNT}`)
     console.log('The test page is read on every request: after editing it, just reload. After a rebuild, just reload.')
@@ -388,8 +416,10 @@ async function check() {
   const problems = []
   const notes = []
   let ready = false
+  const serverMocked = new Set() // urls the server answered from MOCKS: their 4xx is wanted, not a problem
   page.on('console', (m) => {
     const t = m.text()
+    if (t.startsWith('Failed to load resource') && serverMocked.has(m.location()?.url)) return
     if (t.startsWith('[onecx-test] READY')) ready = true
     if (t.startsWith('[onecx-test]')) {
       ;(/NO MOCK|LOAD FAILED|globalError|app message: error/.test(t) ? problems : notes).push(t)
@@ -397,7 +427,10 @@ async function check() {
   })
   page.on('pageerror', (e) => problems.push('page error: ' + String(e.message).split('\n')[0]))
   page.on('response', (r) => {
-    if (r.status() >= 400 && !/\/bff\//.test(r.url())) problems.push(`HTTP ${r.status()} ${new URL(r.url()).pathname}`)
+    const kind = r.headers()['x-onecx-test']
+    if (kind === 'mock' || kind === 'no-mock') serverMocked.add(r.url())
+    if (kind === 'no-mock') problems.push(`[onecx-test] NO MOCK for ${r.request().method()} ${new URL(r.url()).pathname}`)
+    else if (r.status() >= 400 && !kind && !/\/bff\//.test(r.url())) problems.push(`HTTP ${r.status()} ${new URL(r.url()).pathname}`)
   })
   try {
     await page.goto(target)
@@ -442,7 +475,7 @@ async function stop() {
   const c = loadConfig()
   const owner = await fetch(`http://localhost:${c.port}/__onecx-test`).then((r) => r.text()).catch(() => '')
   if (owner !== c.appId) return console.log(`No server for ${c.appId} is running.`)
-  await fetch(`http://localhost:${c.port}/__onecx-test/stop`).catch(() => '')
+  await fetch(`http://localhost:${c.port}/__onecx-test/stop`, { method: 'POST', headers: { 'x-onecx-test': 'stop' } }).catch(() => '')
   console.log(`Stopped the server for ${c.appId}.`)
 }
 

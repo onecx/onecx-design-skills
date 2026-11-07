@@ -102,11 +102,13 @@ if (THEME_NAME === 'onecx') {
   </style>`);
 }
 
+const PERMISSION_LIST = Array.isArray(PERMISSIONS) ? PERMISSIONS : (console.error('[onecx-test] PERMISSIONS must be a list like ["BOOK#SEARCH"]'), []);
+
 // Values the shell would publish, by topic class of @onecx/integration-interface (published in section 7).
 const TOPICS = {
   CurrentMfeTopic: { appId: TEST.appId, productName: TEST.productName, remoteBaseUrl: location.origin + '{{BASE}}', baseHref: TEST.mountPath,
                 mountPath: TEST.mountPath, shellName: 'portal', displayName: TEST.appId, remoteName: TEST.productName, elementName: TEST.tagName, version: '0.0.0' },
-  PermissionsTopic: PERMISSIONS,
+  PermissionsTopic: PERMISSION_LIST,
   UserProfileTopic: { userId: 'test-user', organization: 'test-org', tenantId: 'test-tenant',
                  person: { firstName: 'Test', lastName: 'User', displayName: 'Test User', email: 'test.user@example.com' },
                  settings: { locales: [LOCALE] },
@@ -214,7 +216,6 @@ try {
     return topics.get(cls);
   };
 
-  const PERMISSION_LIST = Array.isArray(PERMISSIONS) ? PERMISSIONS : (console.error('[onecx-test] PERMISSIONS must be a list like ["BOOK#SEARCH"]'), []);
   await Promise.all(Object.entries(TOPICS).map(([cls, value]) => topic(cls)?.publish(value)));
 
   const permissionsRpc = topic('PermissionsRpcTopic');
