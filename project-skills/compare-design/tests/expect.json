@@ -1,0 +1,5 @@
+{ "sel": ".card", "name": "Card", "id": "card", "dir": "col", "gap": 8, "pad": 16, "bg": "#ffffff",
+  "borderColor": "#cac4d0", "borderWidth": 1, "radius": 8, "children": [
+  { "sel": ".line1", "name": "Line 1", "text": "First line", "color": "#49454f", "fontSize": 14 },
+  { "sel": ".btn", "name": "Button", "pad": [10, 24], "bg": "#6750a4", "radius": 20,
+    "text": "Save", "color": "#ffffff", "fontSize": 14, "fontWeight": 500 } ] }

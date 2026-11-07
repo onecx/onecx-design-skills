@@ -44,7 +44,7 @@ When NOT to write a field (leave it out and list it under "could not check"):
 Matching design nodes to app elements:
 - A frame with one text child (button, badge, chip, link): if the app has no own element for the text, put `text`, `color`,
   `fontSize`, `fontWeight` on the frame's node and write no child for the text.
-- Several app elements with the same selector (list items): repeat the child node; each takes the next unused match in DOM order.
+- Several app elements with the same selector (list items): repeat the node (as a child or at the top level); each takes the next unused match in DOM order.
   To pick one directly use `"nth": 2` (0 = first match).
 - A design node the app does not have: still write it (with the selector the app should have). The report shows NOT FOUND.
 - `"strict": true` on a parent: extra visible children in the app become FAIL instead of WARN.
@@ -108,5 +108,5 @@ button padding is 6px instead of 10px. The font family differs too (Arial vs Int
 | text colour `#000000` | no colour set at all (browser default) | set the token colour |
 | `text` differs only in case | design text is stored in source case, the code wrote it upper case | write the source text, use `text-transform` |
 | `fontWeight` 400 vs 500/600 | font file for that weight not loaded or weight not set | import the weight; set `font-weight` |
-| `NOT FOUND` | wrong selector, element not rendered (missing mock data, `*ngIf`/condition false), or truly missing | `--dump` the parent and find it; check mock data |
+| `NOT FOUND` | wrong selector, element not rendered (missing mock data, `*ngIf`/condition false), inside a shadow root or iframe, or truly missing | `--dump` the parent and find it; check mock data. Shadow roots and iframes are invisible to `--dump` too: stop and tell the user |
 | `visible: size 0×0` / `display:none` | empty container, collapsed by a condition, or lazy content not loaded | load the data; `--wait 2000` |

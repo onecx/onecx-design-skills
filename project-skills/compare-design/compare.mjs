@@ -5,12 +5,15 @@
 //   node compare.mjs <url> --shot <file.png> [selector]                          screenshot (deviceScaleFactor 1) for the vision step
 // expect.json = one node or an array of nodes: {sel, name?, nth?, dir?, gap?, pad?, w?, h?, bg?, color?, borderColor?, borderWidth?,
 //   radius?, fontSize?, fontWeight?, fontFamily?, text?, strict?, children?} (meaning of every field: reference.md).
-// Exit code: 0 = no FAIL, 1 = at least one FAIL or NOT FOUND, 2 = usage error, bad expect.json, page or playwright not available.
-// playwright is resolved from the current folder (the project), then from this script's folder, then NODE_PATH, then `npm root -g`.
+// Exit code: 0 = no FAIL, 1 = at least one FAIL or NOT FOUND, 2 = usage error, bad expect.json (also an invalid CSS selector in it;
+//   the ERROR line names the node, e.g. node[0].children[1]), page or playwright not available.
+// playwright is resolved from the current folder (the project), then from this script's folder, then NODE_PATH, then `npm root -g`;
+// in each place the package `playwright` is tried first, then `@playwright/test` (projects that only have the test runner).
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const usage = (msg) => {
   console.error(`ERROR ${msg}\nusage: node compare.mjs <url> <expect.json> [--viewport WxH] [--tolerance N] [--color-tolerance N] [--max-lines N] [--wait MS] [--json]\n       node compare.mjs <url> --dump [selector] [--depth N] [--max-tokens N]\n       node compare.mjs <url> --shot <file.png> [selector]`);
@@ -111,11 +114,11 @@ if (mode === 'compare') {
 
 // ---------- playwright ----------
 function loadPlaywright() {
-  const bases = [process.cwd() + '/', new URL('.', import.meta.url).pathname];
+  const bases = [join(process.cwd(), 'x'), join(fileURLToPath(new URL('.', import.meta.url)), 'x')]; // createRequire needs a file path inside the folder
   for (const p of (process.env.NODE_PATH || '').split(delimiter).filter(Boolean)) bases.push(join(p, 'x'));
   try { bases.push(join(execSync('npm root -g', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(), 'x')); } catch { /* no npm */ }
-  for (const b of bases) { try { return createRequire(b)('playwright'); } catch { /* next */ } }
-  fatal('playwright not found. Install it in the project: npm i -D playwright && npx playwright install chromium (or run from a folder where it is installed)');
+  for (const b of bases) for (const pkg of ['playwright', '@playwright/test']) { try { return createRequire(b)(pkg); } catch { /* next */ } }
+  fatal('playwright not found (looked for playwright and @playwright/test). Install it in the project: npm i -D playwright && npx playwright install chromium (or run from a folder where it is installed)');
 }
 
 // ---------- helpers that run inside the page (serialised as source) ----------
@@ -167,13 +170,37 @@ function descOf(el) {
   return s;
 }
 function chainOf(el, n) { const out = []; for (let p = el.parentElement; p && out.length < n && p !== document.documentElement; p = p.parentElement) out.unshift(descOf(p)); return out.join(' > '); }
-function isVisible(el) {
+// screen-reader-only box: 1×1 (or smaller) and clipped, or clip-path inset(50%)
+function srOnly(cs, r) { return (r.width <= 1 && r.height <= 1 && (cs.overflow !== 'visible' || cs.clip !== 'auto')) || cs.clipPath.startsWith('inset(50%'); }
+// why el cannot be seen ('' = visible): own display/visibility, an ancestor with display:none, opacity:0 or a screen-reader-only box,
+// own opacity:0, own screen-reader-only box, no size
+function hiddenReason(el) {
   const cs = getComputedStyle(el), r = el.getBoundingClientRect();
   if (cs.display === 'none') return 'display:none';
-  if (cs.visibility === 'hidden') return 'visibility:hidden';
-  if (r.width <= 0 || r.height <= 0) return `size ${Math.round(r.width)}×${Math.round(r.height)}`;
+  if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return 'visibility:hidden';
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const pcs = getComputedStyle(p);
+    if (pcs.display === 'none') return `display:none on ancestor ${descOf(p)}`;
+    if (+pcs.opacity === 0) return `opacity:0 on ancestor ${descOf(p)}`;
+    if (pcs.display !== 'contents' && srOnly(pcs, p.getBoundingClientRect())) return `screen-reader-only box (1×1, clipped) on ancestor ${descOf(p)}`;
+  }
   if (+cs.opacity === 0) return 'opacity:0';
+  if (cs.display !== 'contents' && srOnly(cs, r) && (r.width > 0 || r.height > 0 || cs.clipPath.startsWith('inset(50%'))) return 'screen-reader-only box (1×1, clipped)';
+  if (r.width <= 0 || r.height <= 0) return `size ${Math.round(r.width)}×${Math.round(r.height)}`;
   return '';
+}
+// text a user can see inside el: text nodes whose parent chain is visible (hidden spans, sr-only labels, display:none fallbacks
+// do not count); source case, CSS text-transform is not applied (unlike innerText)
+function visibleText(el) {
+  const parts = [], seen = new Map();
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    const p = t.parentElement;
+    if (!p || ['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT'].includes(p.tagName)) continue;
+    if (!seen.has(p)) { const h = hiddenReason(p); seen.set(p, !h || (h.startsWith('size') && /contents|inline/.test(getComputedStyle(p).display))); }
+    if (seen.get(p)) parts.push(t.textContent);
+  }
+  return parts.join('').replace(/\s+/g, ' ').trim();
 }
 function strokeOf(el) {
   const cs = getComputedStyle(el);
@@ -205,7 +232,7 @@ function contentOf(el) {
   const add = (r) => { if (r.width <= 0 && r.height <= 0) return; x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top); x2 = Math.max(x2, r.right); y2 = Math.max(y2, r.bottom); };
   for (const c of el.childNodes) {
     if (c.nodeType === 1) {
-      const v = isVisible(c);
+      const v = hiddenReason(c);
       if (!v) add(c.getBoundingClientRect());
       else if (v.startsWith('size')) { const r = contentOf(c); if (r) add({ left: r.x, top: r.y, right: r.x + r.w, bottom: r.y + r.h, width: r.w, height: r.h }); } // display:contents / empty inline host
     }
@@ -268,31 +295,29 @@ function cssDir(el) {
   return null;
 }
 function hasVisibleContent(el) {
-  if (isVisible(el)) return false;
-  if (el.textContent.trim()) return true;
+  if (hiddenReason(el)) return false;
+  if (visibleText(el)) return true;
   if (el.matches('img,svg,canvas,video,input,select,textarea,button,iframe') || el.querySelector('img,svg,canvas,video,input,select,textarea,button,iframe')) return true;
   const c = toRGBA(getComputedStyle(el).backgroundColor);
   return (c && c.a > 0) || !!strokeOf(el) || getComputedStyle(el).backgroundImage !== 'none';
 }
-const PAGE_HELPERS = [toRGBA, hexOf, over, effectiveBg, descOf, chainOf, isVisible, strokeOf, bordersOf, radiusOf, rectOf, contentOf, overflows, padOf, layoutOf, cssDir, hasVisibleContent].map(String).join('\n');
+const PAGE_HELPERS = [toRGBA, hexOf, over, effectiveBg, descOf, chainOf, srOnly, hiddenReason, visibleText, strokeOf, bordersOf, radiusOf, rectOf, contentOf, overflows, padOf, layoutOf, cssDir, hasVisibleContent].map(String).join('\n');
 
 // measures every expect node inside the page
 function measureTree({ tree }) {
   const visit = (n, parentEl, used) => {
     const out = { where: 'inside' };
-    let list;
-    try {
-      list = [...(parentEl || document).querySelectorAll(n.sel)];
-      if (!list.length && parentEl) { list = [...document.querySelectorAll(n.sel)]; out.where = 'outside'; }
-    } catch (e) { return { where: 'error', error: String(e.message || e).slice(0, 120) }; }
+    let list = [...(parentEl || document).querySelectorAll(n.sel)]; // selectors were validated before (invalid -> exit 2)
+    if (!list.length && parentEl) { list = [...document.querySelectorAll(n.sel)]; out.where = 'outside'; }
     out.count = list.length;
     const el = n.nth != null ? list[n.nth] : list.find((e) => !used.has(e));
     if (!el) return { where: 'missing', count: list.length };
     used.add(el);
     out.el = el;
+    out.index = list.indexOf(el);
     out.desc = descOf(el);
     if (out.where === 'outside') out.chain = chainOf(el, 3);
-    out.hidden = isVisible(el);
+    out.hidden = hiddenReason(el);
     const cs = getComputedStyle(el);
     out.rect = rectOf(el);
     if (out.hidden.startsWith('size') && /contents|inline/.test(cs.display)) { // host element without own box (display:contents / inline): use its content box
@@ -309,7 +334,12 @@ function measureTree({ tree }) {
     out.fontSize = parseFloat(cs.fontSize);
     out.fontWeight = cs.fontWeight;
     out.fontFamily = cs.fontFamily;
-    out.text = el.textContent.replace(/\s+/g, ' ').trim();
+    out.text = visibleText(el);
+    if (n.text != null) { // design text differs: is there an inner element that holds exactly that text?
+      const e = n.text.replace(/\s+/g, ' ').trim();
+      const inner = out.text !== e && [...el.querySelectorAll('*')].find((d) => visibleText(d) === e);
+      if (inner) out.textInner = descOf(inner);
+    }
     out.boxSizing = cs.boxSizing;
     out.padCss = ['Top', 'Right', 'Bottom', 'Left'].map((k) => parseFloat(cs['padding' + k]) || 0);
     out.cssDir = cssDir(el);
@@ -321,14 +351,15 @@ function measureTree({ tree }) {
     if (n.children && n.children.length) {
       const slots = new Set(found.map((c) => { let s = c.el; while (s.parentElement && s.parentElement !== el) s = s.parentElement; return s; }));
       out.extras = [...el.children].filter((k) => !slots.has(k) && !['SCRIPT', 'STYLE', 'TEMPLATE', 'LINK', 'META'].includes(k.tagName) && hasVisibleContent(k))
-        .map((k) => descOf(k) + (k.textContent.trim() ? ` "${k.textContent.replace(/\s+/g, ' ').trim().slice(0, 30)}"` : ''));
+        .map((k) => { const t = visibleText(k); return descOf(k) + (t ? ` "${t.slice(0, 30)}"` : ''); });
     }
     out.overflow = overflows(el); // scrolling/clipped content: padding cannot be measured from boxes
     out.pad = out.overflow ? null : padOf(el, contentOf(el)); // all visible content counts, also content not listed in expect.json
     return out;
   };
   const strip = (m) => { if (!m) return m; delete m.el; delete m.insideSibling; (m.children || []).forEach(strip); return m; };
-  const res = tree.map((n) => visit(n, null, new Set()));
+  const used = new Set(); // shared by all top-level nodes: a repeated top-level node takes the next unused match
+  const res = tree.map((n) => visit(n, null, used));
   // mark nesting before the element references are removed
   const mark = (m) => { if (!m || !m.children) return; for (const c of m.children) { if (c && c.insideSibling) c.insideOf = m.children.findIndex((o) => o && o.el === c.insideSibling); mark(c); } };
   res.forEach(mark);
@@ -434,6 +465,14 @@ try { browser = await chromium.launch(); } catch (e) { fatal(`cannot start chrom
 let exitCode = 2;
 try {
   const page = await browser.newPage({ viewport: { width: vw, height: vh }, deviceScaleFactor: 1 });
+  { // invalid CSS selectors (expect.json or --dump/--shot) -> ERROR line and exit 2, before the page is loaded
+    const sels = [];
+    const collect = (n, path) => { sels.push([path, n.sel]); (n.children || []).forEach((c, i) => collect(c, `${path}.children[${i}]`)); };
+    if (mode === 'compare') tree.forEach((n, i) => collect(n, `node[${i}]`));
+    else if (modeArg) sels.push([mode === 'dump' ? '--dump' : '--shot', modeArg]);
+    const bad = await page.evaluate((list) => list.map(([path, s]) => { try { document.createDocumentFragment().querySelector(s); return null; } catch (e) { return `${path}: invalid CSS selector "${s}": ${String(e.message || e).split('\n')[0]}`; } }).filter(Boolean), sels);
+    if (bad.length) fatal(mode === 'compare' ? `${pos[1]} is invalid:\n  ${bad.slice(0, 15).join('\n  ')}` : bad[0]);
+  }
   try { await page.goto(url, { waitUntil: 'load', timeout: 30000 }); } catch (e) { fatal(`cannot open ${url}: ${String(e.message).split('\n')[0]} (is the app running? see the run-test-instance skill)`); }
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   const waitSels = mode === 'compare' ? tree.map((n) => n.sel) : modeArg ? [modeArg] : [];
@@ -441,10 +480,6 @@ try {
   await page.evaluate(() => document.fonts.ready).catch(() => {});
   await page.waitForTimeout(opt.wait);
   const inPage = (fn, arg) => page.evaluate(`(() => { ${PAGE_HELPERS}\n return (${fn})(${JSON.stringify(arg)}); })()`);
-  if (modeArg) { // invalid selector -> ERROR line and exit 2 (as for expect.json problems)
-    const bad = await page.evaluate((s) => { try { document.querySelector(s); return ''; } catch (e) { return String(e.message || e); } }, modeArg);
-    if (bad) fatal(`invalid CSS selector "${modeArg}": ${bad.split('\n')[0]}`);
-  }
 
   if (mode === 'shot') {
     if (modeArg) {
@@ -498,14 +533,13 @@ function report(nodes, measured) {
     const name = n.name || n.sel;
     const p = path ? `${path} > ${name}` : name;
     const kidsCount = (n.children || []).reduce((a, c) => a + countNodes(c), 0);
-    if (m.where === 'error') { add('FAIL', 'hierarchy', p, 'exists', 'valid selector', 'INVALID SELECTOR', m.error); return; }
     if (m.where === 'missing') {
-      add('FAIL', 'hierarchy', p, 'exists', 'present', 'NOT FOUND', m.count ? `only ${m.count} match(es) for "${n.sel}"${n.nth != null ? `, nth=${n.nth} is too high` : ', all used by earlier siblings'}` : `no element matches "${n.sel}"${path ? ' anywhere on the page' : ''}; find the right selector with --dump`);
+      add('FAIL', 'hierarchy', p, 'exists', 'present', 'NOT FOUND', m.count ? `only ${m.count} match(es) for "${n.sel}"${n.nth != null ? `, nth=${n.nth} is too high` : ', all used by earlier siblings'}` : `no element matches "${n.sel}"${path ? ' anywhere on the page' : ''}; find the right selector with --dump. --dump cannot see inside shadow roots or iframes either: if the element is in one, stop and tell the user (not checkable)`);
       if (kidsCount) add('SKIP', 'hierarchy', p, 'children', `${kidsCount} nested node(s)`, 'not checked', 'parent not found');
       return;
     }
     if (m.where === 'outside') add('FAIL', 'hierarchy', p, 'parent', `inside ${path}`, `inside ${m.chain}`, 'element exists but not inside its design parent');
-    else add('PASS', 'hierarchy', p, 'exists', 'present', m.desc + (depth === 0 && m.count > 1 && n.nth == null ? ` (first of ${m.count})` : ''));
+    else add('PASS', 'hierarchy', p, 'exists', 'present', m.desc + (depth === 0 && m.count > 1 ? ` (match ${m.index + 1} of ${m.count})` : ''));
     if (m.hidden) { add('FAIL', 'hierarchy', p, 'visible', 'visible', m.hidden, 'element is in the DOM but not visible'); if (kidsCount) add('SKIP', 'hierarchy', p, 'children', `${kidsCount} nested node(s)`, 'not checked', 'parent not visible'); return; }
 
     // spacing: size
@@ -544,7 +578,7 @@ function report(nodes, measured) {
       const e = n.text.replace(/\s+/g, ' ').trim();
       const short = (s) => JSON.stringify(s.length > 50 ? s.slice(0, 49) + '…' : s);
       if (m.text === e) add('PASS', 'text', p, 'text', short(e), short(m.text));
-      else add('FAIL', 'text', p, 'text', short(e), short(m.text), m.text.toLowerCase() === e.toLowerCase() ? 'differs only in case (design text is in source case; CSS text-transform does not count)' : m.text.includes(e) ? 'element contains more text: select the inner text element' : '');
+      else add('FAIL', 'text', p, 'text', short(e), short(m.text), m.text.toLowerCase() === e.toLowerCase() ? 'differs only in case (design text is in source case; CSS text-transform does not count)' : m.textInner ? `inner element ${m.textInner} holds exactly this text: select it` : m.text.includes(e) ? 'element shows more visible text than the design and no inner element holds just the design text: extra text in the app (or ask whether the design text is complete)' : '');
     }
 
     // children: hierarchy + spacing

@@ -1,0 +1,13 @@
+<!doctype html><html><head><style>
+/* the Card of reference.md section 2 (with the deliberate differences), plus cases from the PR #4 review */
+body{margin:0;font-family:Arial,sans-serif}
+.card{display:flex;flex-direction:column;gap:8px;padding:16px;width:536px;background:#ffffff;outline:1px solid #cac4d0;outline-offset:-1px;border-radius:8px}
+.card p{margin:0 0 4px 0;font-size:14px;line-height:20px;color:#000000}
+.btn{align-self:flex-start;padding:6px 24px;background:#6750a4;color:#fff;border:0;border-radius:20px;font-size:14px;font-weight:500;line-height:20px;font-family:Arial,sans-serif}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+</style></head><body>
+<section class="card"><p class="line1">First line</p><button class="btn">Save</button></section>
+<button class="b1">Save<span class="sr">(opens dialog)</span><span style="display:none">x</span></button>
+<div class="item">one</div><div class="item">two</div>
+<div style="opacity:0"><span class="ghost">ghost</span></div>
+</body></html>

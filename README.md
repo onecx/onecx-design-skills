@@ -4,15 +4,17 @@ Skill system that lets an AI agent with a small context window (250k tokens) **r
 (`.pen` from Pencil, `.fig` from Figma, tested up to 400 MB) without ever reading the raw file.
 
 ```
-design-index/             global, framework-neutral skill: CLI `design-query` + SKILL.md + references/
-project-skills/react/     copy into <react-repo>/.claude/skills/implement-design/
-project-skills/angular/   copy into <angular-repo>/.claude/skills/implement-design/
+design-index/                   global, framework-neutral skill: CLI `design-query` + SKILL.md + references/
+project-skills/react/           copy into <react-repo>/.claude/skills/implement-design/
+project-skills/angular/         copy into <angular-repo>/.claude/skills/implement-design/
 project-skills/compare-design/  copy into <app-repo>/.claude/skills/compare-design/ (checks a running app against a design, no pictures needed)
 ```
 
 All skill text is English. The project skills only use the `design-query` command, never a path into `design-index`.
 
-## Install (the only requirement is Node.js ≥ 22.13)
+## Install (design-index needs only Node.js ≥ 22.13)
+`compare-design` additionally needs `playwright` (or `@playwright/test`) and Chromium in the app repo (`npm i -D playwright && npx playwright install chromium`);
+its `tests/` folder is optional (`node --test project-skills/compare-design/tests/compare.test.mjs`, skipped when playwright or Chromium is missing).
 ```
 # from a release: unpack design-index-<version>.tar.gz, then
 cd design-index && npm link        # or: npm i -g . ; or call: node design-index/dist/cli.js <command>

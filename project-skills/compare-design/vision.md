@@ -10,10 +10,11 @@ Pick the case that fits you:
 - **Case C**: no image-capable model is available anywhere.
 
 ## Get the two images (case A and B)
-1. Design: `design-query screenshot <section-id>`. It prints the PNG path. Copy it to `design.png`.
-   It is an offline approximation: substitute fonts, placeholder icons and images, no exact pixels.
+1. Design: `design-query screenshot <section-id> --out design.png --max-edge 4096`.
+   `--max-edge` limits the long edge (default 1024, which shrinks wider frames); 4096 is the maximum and never enlarges, so the PNG
+   keeps the design's own size. It is an offline approximation: substitute fonts, placeholder icons and images, no exact pixels.
    It prints the PNG size. A `fill` section drawn alone can be narrower than in the app: then use the parent frame's id.
-2. App, same width as the design frame (`spec` first line, e.g. `600×hug`), deviceScaleFactor 1:
+2. App, same width as the design frame (the frame width from SKILL.md step 2, e.g. 600), deviceScaleFactor 1:
    `node <skill-folder>/compare.mjs <url> --shot app.png "<selector of the section>" --viewport 600x900`.
    Done when both files exist and the `--shot` line shows a width close to the design width.
 

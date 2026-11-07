@@ -23,8 +23,11 @@ Checks a running page against a design frame with numbers, not pictures: (1) hie
 1. **App URL.** Get a URL where the screen is visible. A OneCX app without the shell: see the run-test-instance skill.
    Done when the URL opens and shows the screen (`C <url> --dump --depth 2` prints elements, not only `body`).
 2. **Design side.** `design-query tree <frame-id> --depth 2`, then `design-query spec <section-id>` for ONE section.
-   Note the frame width (first line of `spec`, e.g. `600×hug`).
-   Done when you have the `spec` text of one section.
+   Note the frame width: the first number of the size on the frame's own line, which is the first line of `tree <frame-id>` after
+   `# Path:` (e.g. `bookings frame "Bookings" 1280×hug` -> 1280). Take it from the frame, not from the section (sections are often `fill`).
+   If the frame width is `fill` or `hug` too, it has no fixed width: ask the user for the viewport width; without an answer use 1280
+   (the `compare.mjs` default) and write `viewport 1280 (frame has no fixed width)` into the report.
+   Done when you have the `spec` text of one section and a viewport width that is a number.
 3. **App side.** `C <url> --dump "<selector of that section>" --viewport <frame width>x900`.
    The output uses the same notation as `spec`. Put both side by side and match every design line to an app line.
    Done when every design node has an app selector, or is listed as "not found in app".
@@ -32,7 +35,8 @@ Checks a running page against a design frame with numbers, not pictures: (1) hie
    One node per design node you matched, nested like the design. `sel` is a CSS selector; a child `sel` is searched inside its parent.
    Done when every value in `expect.json` comes from a `spec` line and no `~` value is in it.
 5. **Run.** `C <url> expect.json --viewport <frame width>x900`.
-   Exit code 0 = no FAIL, 1 = FAIL found, 2 = your command or `expect.json` is wrong (the ERROR line says what; fix and rerun).
+   Exit code 0 = no FAIL, 1 = FAIL found, 2 = your command or `expect.json` is wrong, also an invalid CSS selector in it
+   (the ERROR line says what and names the node, e.g. `node[0].children[1]`; fix and rerun).
    Done when the exit code is 0 or 1.
 6. **Read the report.** FAIL lines come first. For each FAIL: find the cause with `reference.md` (section 3), fix the code if
    you are implementing, else report it. Rerun step 5 after each fix. WARN = check by hand and mention it. SKIP = "could not check".
@@ -65,8 +69,9 @@ Use the values from the compare report; add the token name from `spec` when ther
 | Page loads slowly | `--wait 2000` (extra milliseconds after load) |
 | App screenshot for `vision.md` | `C <url> --shot app.png "<selector>" --viewport WxH` |
 
-`playwright` must be installed in the project or globally (`npm i -D playwright` and `npx playwright install chromium`; ask before adding it).
-`compare.mjs` looks for it in the current folder first, so run it from the app repo.
+`playwright` (or `@playwright/test`, which also works) must be installed in the project or globally (`npm i -D playwright` and
+`npx playwright install chromium`; ask before adding it). `compare.mjs` looks for it in the current folder first, so run it from the app repo.
+The `tests/` folder of this skill is optional: it is only for developing `compare.mjs`; a copy of the skill works without it.
 
 ## Honest limits (tell the user when relevant)
 - `design-query screenshot` is an offline approximation (own layout engine, substitute fonts, placeholder icons). Never take numbers from it.
@@ -76,7 +81,9 @@ Use the values from the compare report; add the token name from `spec` when ther
 - Tolerance: 2px for sizes and spacing, 2 per colour channel (0-255), 3 for alpha. Text boxes use the line height, so a text with
   `lh-normal` can differ by 1-3px; raise `--tolerance` for that node's check only by asking the user.
 - Not checked: images, icons' shapes, gradients, shadows other than a 0-blur ring, blend modes, hover/focus/disabled states
-  (the page is measured as loaded), elements inside shadow DOM or iframes, animations.
+  (the page is measured as loaded), elements inside shadow DOM or iframes (also invisible to `--dump`: stop and tell the user), animations.
+- `text` is the text a user sees: text inside hidden elements (`display:none`, `visibility:hidden`, `opacity:0`, screen-reader-only
+  1×1 clipped boxes) does not count. It is in source case (CSS `text-transform` is not applied).
 - Padding is measured from ALL visible content of the element (also icons/text not listed in `expect.json`). Free space at the
   right/bottom (fixed size, centring) is a WARN, not a FAIL. Scrolling/clipping elements whose content overflows: pad is SKIP.
 - Wrapped rows: only the gap inside each line is checked, not the gap between lines. CSS grid and absolutely positioned
