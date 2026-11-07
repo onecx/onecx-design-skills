@@ -60,6 +60,5 @@ so the app repo stays unchanged: change app code only for the feature you work o
 | `Playwright is not installed` | Run the two install commands it prints. They install into the work folder, not into the app. |
 | `the app shows no text on this page` | Check a route from the line `Other pages` of `init`. |
 | `the app did not start within ...` | Check again with `--wait 15000`. If it stays, read `reference.md`. |
-| `info: topic without value: <name>` | Only a hint; act on it only when the app shows nothing. |
 
 Any other problem, or a change to the test page itself: read `reference.md` (how the test page replaces the shell).

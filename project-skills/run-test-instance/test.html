@@ -54,8 +54,7 @@ const TEST = {
 };
 const log = (...a) => console.log('[onecx-test]', ...a);
 
-// 1. Topics go over window.postMessage (not BroadcastChannel), so this page can answer them.
-globalThis['@onecx/accelerator'] = { topic: { useBroadcastChannel: false } };
+// 1. Globals the shell sets.
 window['onecx-shell-capabilities'] = ['parametersTopic', 'currentLocationTopic', 'activenessAwareMenus'];
 // Config the app would read from assets/env.json (that file still has ${...} placeholders after a build).
 globalThis.APP_CONFIG = { APP_BASE_HREF: '/' };
@@ -103,72 +102,29 @@ if (THEME_NAME === 'onecx') {
   </style>`);
 }
 
+// Values the shell would publish, by topic class of @onecx/integration-interface (published in section 7).
 const TOPICS = {
-  currentMfe: { appId: TEST.appId, productName: TEST.productName, remoteBaseUrl: location.origin + '{{BASE}}', baseHref: TEST.mountPath,
+  CurrentMfeTopic: { appId: TEST.appId, productName: TEST.productName, remoteBaseUrl: location.origin + '{{BASE}}', baseHref: TEST.mountPath,
                 mountPath: TEST.mountPath, shellName: 'portal', displayName: TEST.appId, remoteName: TEST.productName, elementName: TEST.tagName, version: '0.0.0' },
-  permissions: PERMISSIONS,
-  userProfile: { userId: 'test-user', organization: 'test-org', tenantId: 'test-tenant',
+  PermissionsTopic: PERMISSIONS,
+  UserProfileTopic: { userId: 'test-user', organization: 'test-org', tenantId: 'test-tenant',
                  person: { firstName: 'Test', lastName: 'User', displayName: 'Test User', email: 'test.user@example.com' },
                  settings: { locales: [LOCALE] },
                  accountSettings: { localeAndTimeSettings: { locale: LOCALE, timezone: 'Europe/Berlin' },
                                     layoutAndThemeSettings: { menuMode: 'STATIC', colorScheme: 'LIGHT' } } },
-  isAuthenticated: undefined,
-  configuration: {},
-  currentPortal: { workspaceName: 'test-workspace', portalName: 'test-workspace', displayName: 'Test Workspace', baseUrl: '/',
+  IsAuthenticatedTopic: undefined,
+  ConfigurationTopic: {},
+  CurrentWorkspaceTopic: { workspaceName: 'test-workspace', portalName: 'test-workspace', displayName: 'Test Workspace', baseUrl: '/',
                    homePage: '/', microfrontendRegistrations: [], routes: [] },
-  currentTheme: { name: THEME_NAME === 'onecx' ? 'default' : 'test-theme', displayName: THEME_NAME === 'onecx' ? 'OneCX' : 'Test', properties: THEME_PROPERTIES },
-  currentLocation: { url: location.pathname + location.search + location.hash, isFirst: true },
-  remoteComponentsInfo: { components: [], slots: [] },
-  parameters: { parameters: [] },
-  imageRepository: { images: {} },
-  globalLoading: false
+  CurrentThemeTopic: { name: THEME_NAME === 'onecx' ? 'default' : 'test-theme', displayName: THEME_NAME === 'onecx' ? 'OneCX' : 'Test', properties: THEME_PROPERTIES },
+  CurrentLocationTopic: { url: location.pathname + location.search + location.hash, isFirst: true },
+  RemoteComponentsTopic: { components: [], slots: [] },
+  ParametersTopic: { parameters: [] },
+  ImageRepositoryTopic: { images: {} },
+  GlobalLoadingTopic: false
 };
 
-// 4. Topic bus: keep the last value of every topic and answer TopicGet like the shell does.
-const OWN_ID_START = 1e9;
-let nextId = OWN_ID_START;
-const retained = {};
-function publish(name, data, version = 1) {
-  const msg = { type: 'TopicNext', name, version, data, timestamp: performance.now(), id: nextId++ };
-  retained[name + '|' + version] = msg;
-  window.postMessage(msg, '*');
-}
-const toasts = () => document.getElementById('onecx-test-toasts');
-window.addEventListener('message', (e) => {
-  const m = e.data;
-  if (!m || typeof m.type !== 'string' || !m.name) return;
-  const key = m.name + '|' + m.version;
-  if (m.type === 'TopicGet') {
-    if (retained[key]) window.postMessage(retained[key], '*');
-    else if (!['translationCache', 'manualBreadcrumbs', 'currentPage', 'message', 'globalError'].includes(m.name)) log('topic without value:', key);
-  } else if (m.type === 'TopicNext' && !(m.id >= OWN_ID_START)) {
-    retained[key] = m;
-    if (m.name === 'message') {
-      log('app message:', m.data?.severity, m.data?.summary ?? m.data?.summaryKey, m.data?.detail ?? '');
-      const d = document.createElement('div'); d.textContent = (m.data?.severity ?? '') + ': ' + (m.data?.summary ?? m.data?.summaryKey ?? '');
-      toasts()?.appendChild(d); setTimeout(() => d.remove(), 6000);
-    } else if (m.name === 'permissionsRpc' && m.data && m.data.permissions === undefined) {
-      publish('permissionsRpc', { ...m.data, permissions: PERMISSIONS });
-    } else if (m.name === 'globalError') {
-      console.error('[onecx-test] app globalError:', m.data);
-    }
-  }
-});
-for (const [name, data] of Object.entries(TOPICS)) publish(name, data);
-
-// 5. /test and every path below it belong to the app: tell the app about navigations like the shell does.
-const currentUrl = () => location.pathname + location.search + location.hash;
-for (const fn of ['pushState', 'replaceState']) {
-  const orig = history[fn];
-  history[fn] = function (state, ...rest) {
-    const r = orig.call(this, state, ...rest);
-    if (!state?.isRouterSync) publish('currentLocation', { url: currentUrl(), isFirst: false });
-    return r;
-  };
-}
-window.addEventListener('popstate', () => publish('currentLocation', { url: currentUrl(), isFirst: false }));
-
-// 6. BFF mocks for XMLHttpRequest and fetch.
+// 4. BFF mocks for XMLHttpRequest and fetch.
 const escapeRe = (s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
 const mockFor = (method, url) => {
   const path = new URL(url, location.href).pathname;
@@ -229,16 +185,54 @@ window.fetch = async (input, init) => {
 <div id="onecx-test-toasts"></div>
 <div id="onecx-test-app"></div>
 <script type="module">
-// 7. Auth stub. Set it here, after the polyfills: zone.js clears every window property whose name starts with "on".
+// 5. Auth stub. Set it here, after the polyfills: zone.js clears every window property whose name starts with "on".
 const authProxy = { v1: { getHeaderValues: () => ({ Authorization: 'Bearer test-token', 'apm-principal-token': 'test-id-token' }),
                           updateTokenIfNeeded: () => Promise.resolve(true) } };
 window.onecxAuth = { authServiceProxy: authProxy };
 window.onecxAngularAuth = { authServiceProxy: authProxy };
 
-// 8. Load the remote module, then put the web component into the page.
+// 6. Load the remote. init() registers the libraries the app shares (module federation share scope).
 try {
   const container = await import(TEST.remoteEntry);
-  await container.init({});
+  const shareScope = {};
+  await container.init(shareScope);
+
+  // 7. Topics: this page uses the app's own @onecx/integration-interface from the share scope, like the shell
+  //    uses its copy. A topic object keeps its last value and gives it to topics the app creates later.
+  const versions = shareScope['@onecx/integration-interface'];
+  if (!versions) throw new Error('the app does not share @onecx/integration-interface (shared in its module federation config)');
+  const shared = Object.values(versions)[0];
+  const loaded = await shared.get();
+  const lib = typeof loaded === 'function' ? loaded() : loaded;
+  const topic = (cls) => (lib[cls] ? new lib[cls]() : (log('this library version has no', cls), undefined));
+
+  await Promise.all(Object.entries(TOPICS).map(([cls, value]) => topic(cls)?.publish(value)));
+
+  const permissionsRpc = topic('PermissionsRpcTopic');
+  permissionsRpc?.subscribe((m) => { if (m && m.permissions === undefined) permissionsRpc.publish({ ...m, permissions: PERMISSIONS }); });
+  topic('MessageTopic')?.subscribe((m) => {
+    log('app message:', m?.severity, m?.summary ?? m?.summaryKey, m?.detail ?? '');
+    const d = document.createElement('div');
+    d.textContent = (m?.severity ?? '') + ': ' + (m?.summary ?? m?.summaryKey ?? '');
+    document.getElementById('onecx-test-toasts').appendChild(d);
+    setTimeout(() => d.remove(), 6000);
+  });
+  topic('GlobalErrorTopic')?.subscribe((e) => console.error('[onecx-test] app globalError:', e));
+
+  // /test and every path below it belong to the app: tell the app about navigations like the shell does.
+  const location$ = topic('CurrentLocationTopic');
+  const currentUrl = () => location.pathname + location.search + location.hash;
+  for (const fn of ['pushState', 'replaceState']) {
+    const orig = history[fn];
+    history[fn] = function (state, ...rest) {
+      const r = orig.call(this, state, ...rest);
+      if (!state?.isRouterSync) location$?.publish({ url: currentUrl(), isFirst: false });
+      return r;
+    };
+  }
+  window.addEventListener('popstate', () => location$?.publish({ url: currentUrl(), isFirst: false }));
+
+  // 8. Run the app's bootstrap, then put the web component into the page.
   const factory = await container.get(TEST.exposedModule);
   factory();
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error(

@@ -15,9 +15,10 @@ Verified with onecx-tenant-ui (Angular 19, libs 6), a generated Angular 21 app (
 - Vite production builds use base `/mfe/<name>/`; `init` reads the base from `dist/index.html`, `serve` mounts dist there.
 
 ## Topics
-Topics (`@onecx/integration-interface`) are messages `{ type: 'TopicNext', name, version, data, timestamp, id }`.
-The page sets `globalThis['@onecx/accelerator'].topic.useBroadcastChannel = false` before anything loads, so all topics use
-`window.postMessage`. A topic created later asks with `TopicGet`; the page answers with the last value (the shell does the same).
+The page publishes and subscribes with the topic classes of `@onecx/integration-interface` (`new CurrentMfeTopic().publish(...)`,
+`new MessageTopic().subscribe(...)`). It takes the library from the app itself: after `container.init(shareScope)` the app's
+shared `@onecx/integration-interface` is in the share scope, so page and app use the same library version and transport.
+A topic object keeps its last value and hands it to topic objects the app creates later, as the shell's topics do.
 
 | Topic (name) | Value on the test page | Why it is needed |
 |---|---|---|
@@ -33,8 +34,7 @@ The page sets `globalThis['@onecx/accelerator'].topic.useBroadcastChannel = fals
 | `remoteComponentsInfo` | no slots | slots wait for it |
 | `parameters`, `imageRepository`, `globalLoading` | empty / false | optional, avoids waiting |
 
-Published by the app and shown by the page: `message` (toasts, logged as `app message:`), `globalError`, `currentPage`,
-`manualBreadcrumbs`, `translationCache`.
+Subscribed by the page: `message` (toasts, logged as `app message:`), `globalError` (logged as error), `permissionsRpc` (answered).
 
 ## Theme
 `THEME = 'onecx'` (default when any git remote, e.g. `origin` or the `upstream` of a fork, is `github.com/onecx/...`) gives the look of the app inside OneCX:
