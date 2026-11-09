@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the design-index skill and the React/Angular/compare-design project skills.
+# Publishes the design-index skill and the React/Angular/run-test-instance/compare-design project skills.
 #   - push a tag like v0.2.0 (must match "version" in design-index/package.json) -> build, test, GitHub release
 #   - manual run (workflow_dispatch) -> build and test only, artifacts are attached to the run (no release)
 on:
@@ -71,6 +71,7 @@ jobs:
           for fw in react angular; do
             tar -C "$GITHUB_WORKSPACE/project-skills/$fw" -czf "$OUT/implement-design-$fw-$V.tar.gz" implement-design
           done
+          tar -C "$GITHUB_WORKSPACE/project-skills" -czf "$OUT/run-test-instance-$V.tar.gz" run-test-instance
           # tests/ is only for developing compare.mjs; the skill runs without it
           tar -C "$GITHUB_WORKSPACE/project-skills" --exclude=compare-design/tests -czf "$OUT/compare-design-$V.tar.gz" compare-design
           rm -rf "$OUT/design-index"

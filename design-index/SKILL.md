@@ -46,7 +46,8 @@ These options may stand before or after the command: `design-query --max-tokens 
 | One node in detail | `node <id>` (a field cut to fit ends in `…` and a `→ raw truncated …: node <id> --max-tokens N` line names the budget that shows it in full; run that) |
 
 ## How to read the output
-`id type "name" W×H` · `fill` = fills parent, `hug` = fits content, number = fixed · `row`/`col` = flex direction, `gap=` `pad=` spacing ·
+`id type "name" W×H` (**width×height**: `fill×hug(542)` = width fills, height hugs, 542 is the height) · `fill` = fills parent, `hug` = fits content (`hug(N)` N = measured size, set no size in CSS), number = fixed
+`row`/`col` = flex direction, `gap=` `pad=` spacing (`pad=a` all sides, `pad=a,b` = vertical a, horizontal b, `pad=t,r,b,l`; no `ai=`/`jc=` = flex-start) ·
 `$name(value)` = token: use `var(--name)`; the value in parentheses is what it resolves to here (aliases followed, explicit mode applied, lengths in px) — use it if the project has no such token, never guess another value · `(=$x?)` = same value as token x but not bound in the design ·
 `→Comp[Variant]` = component instance · `.s3` = repeated style, defined once at the top · `svg=…` = exported vector file name ·
 no `r=` = square corners (radius 0): never round a box on your own · `hug(N)` text = natural width, use `white-space: nowrap` · `@x,y` = absolute position (only inside absolutely positioned parents) · `… N children (tree <id> …)` = more below, run that command.
