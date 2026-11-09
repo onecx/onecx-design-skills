@@ -1,6 +1,6 @@
 # Conventions (React)
 
-Filled in once by the agent during "Detect the project" and updated when the dependencies change. Delete the hint lines when done.
+Filled in by the agent during "Detect the project" and updated when the dependencies change. Replace every `(not detected yet)` / `(path)` with the real value (the agent must fill this file before writing code); delete the hint lines when done.
 Keep this file under 100 lines. It records what the repo already does; do not add framework knowledge from memory here.
 
 Dependency fingerprint: (hash or list of the main dependency versions from package.json / lockfile; compare it on every session)
@@ -19,11 +19,21 @@ Dependency fingerprint: (hash or list of the main dependency versions from packa
 - Lint / format / type-check commands: (not detected yet)
 
 ## Design integration
-- Token file (output of `design-query tokens --format css --out …`): (path)
-- Where the token file is imported: (path)
+- Token file (output of `design-query tokens --format css --out …`): `src/styles/tokens.generated.css` (keep this name and path; generated, never edited)
+- Where the token file is imported: `src/main.tsx`, once
 - Asset directory for `design-query assets export --out …`: (path)
 - Where screens / pages live: (path)
 - Where shared components live: (path)
+
+## Existing CSS
+Filled in during phase A of `spec-to-css.md` (inventory), one line per item; update it when you add a shared class or component. Reuse these before writing CSS.
+- Shared utility classes (name = what it sets, file): (not inventoried yet)
+- Components with their custom properties (e.g. `Card`: `--card-header-bg` ...) and slots/inputs: (not inventoried yet)
+- Class naming scheme (BEM `block__element--modifier` or other; scoping): (not inventoried yet)
+- Where new CSS goes (component's own file; never global base files): (not inventoried yet)
+- Token naming and how components read tokens (short component-level custom properties): (not inventoried yet)
+- Role -> token map (page title, section heading, group heading, similar controls: token/style by role from the spec's style name):  (not inventoried yet)
+- Product root class / theme scope for new selectors, and any dependency on a library's or other module's private markup (what, where, how verified): (not inventoried yet)
 
 ## Deviations
 Features of the preferred style the installed version does not support, with the fallback used and the doc page checked.
