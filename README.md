@@ -7,7 +7,15 @@ Skill system that lets an AI agent with a small context window (250k tokens) **r
 design-index/             global, framework-neutral skill: CLI `design-query` + SKILL.md + references/
 project-skills/react/     copy into <react-repo>/.claude/skills/implement-design/
 project-skills/angular/   copy into <angular-repo>/.claude/skills/implement-design/
+project-skills/run-test-instance/   copy into <app-repo>/.claude/skills/run-test-instance/ (OneCX Angular and React apps)
 ```
+
+`run-test-instance` runs a OneCX microfrontend in the browser without the shell and without a backend: a test page loads the
+module federation remote, inserts its web component, publishes the topics the shell would publish (dummy user, permissions,
+theme, workspace) and answers BFF calls with mock data written by the model from the app's openapi file. Apps of the onecx GitHub
+organisation get the OneCX default theme and font (bundled), other apps keep their own look. `onecx-test.mjs`
+(Node ≥ 22, no dependencies; Playwright is installed into `~/.cache/onecx-test` on first `check`) detects everything else from the repo
+and writes nothing into it. Details: `project-skills/run-test-instance/reference.md`.
 
 All skill text is English. The project skills only use the `design-query` command, never a path into `design-index`.
 

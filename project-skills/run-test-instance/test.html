@@ -1,0 +1,262 @@
+<!doctype html>
+<!--
+  OneCX test page: runs one microfrontend without the shell.
+  Written by `onecx-test.mjs init`. Edit only the block marked EDIT HERE.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OneCX test: {{APP_ID}}</title>
+<base href="/" />
+{{STYLES_LINK}}
+<style>
+  body { margin: 0; padding: 16px; font-family: Arial, Helvetica, sans-serif; } /* 'onecx' replaces the font */
+  /* screen-reader-only helpers the shell's layout CSS normally hides */
+  .cdk-visually-hidden, .p-hidden-accessible, .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #onecx-test-toasts { position: fixed; top: 8px; right: 8px; z-index: 99999; font: 13px Arial, sans-serif; }
+  #onecx-test-toasts div { margin: 4px; padding: 8px 12px; border-radius: 4px; background: #333; color: #fff; }
+</style>
+<script>
+/* ======================= EDIT HERE ======================= */
+
+// Permissions of the current user. Remove one to test the "no permission" case.
+const PERMISSIONS = {{PERMISSIONS}};
+
+// Language of the current user: 'en' or 'de'.
+const LOCALE = 'en';
+
+// Look of the page around the app:
+//   'onecx' = OneCX default theme, font and page styles of the shell (apps of the onecx GitHub organisation)
+//   'none'  = neutral: Arial and the app's own styles (business apps with a hardcoded theme)
+const THEME = '{{THEME}}';
+
+// BFF mocks. One entry per request the app makes.
+//   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+//   url:    path of the request, '*' matches one path part, e.g. '/bff/books/*' matches '/bff/books/b1'
+//           (server name and query string are ignored)
+//   status: HTTP status, e.g. 200, 201, 204, 404
+//   body:   JSON response (object or array), or null for no body
+//   delayMs (optional): wait before answering, default 50
+// Bodies must match the response schema in the openapi file of the BFF.
+const MOCKS = [
+{{MOCKS}}
+];
+
+/* ===================== END EDIT HERE ===================== */
+
+const TEST = {
+  appId: '{{APP_ID}}',
+  productName: '{{PRODUCT_NAME}}',
+  tagName: '{{TAG_NAME}}',
+  remoteEntry: '/{{REMOTE_ENTRY}}',
+  exposedModule: '{{EXPOSED_MODULE}}',
+  mountPath: '/test/'  // the page itself lives at /test (see onecx-test.mjs)
+};
+const log = (...a) => console.log('[onecx-test]', ...a);
+
+// 1. Globals the shell sets.
+window['onecx-shell-capabilities'] = ['parametersTopic', 'currentLocationTopic', 'activenessAwareMenus'];
+// Config the app would read from assets/env.json (that file still has ${...} placeholders after a build).
+globalThis.APP_CONFIG = { APP_BASE_HREF: '/' };
+
+// 2. Hooks the shell puts on document. The build of the app rewrites PrimeNG / Material code to call them.
+const createEl = (ctx, tag, opts) => document.createElement(typeof tag === 'string' ? tag : ctx?.element, opts);
+document.createOnecxElement = createEl;
+document.createElementFromSharedStylesHost = createEl;
+document.createElementFromPrimeNg = createEl;
+document.createElementFromMaterial = createEl;
+document.createOnecxDynamicContainer = (tag) => { const c = document.createElement(tag); document.body.appendChild(c); return c; };
+
+// 3. Theme. 'onecx' = theme "default" of onecx-local-env (onecx-data/theme/default_OneCX.json) plus the global styles
+//    the shell puts on the page (@onecx/portal-layout-styles theme_defaults.scss, shell global-styles.scss).
+const THEME_NAME = String(typeof THEME === 'undefined' ? '{{THEME}}' : THEME).trim().toLowerCase();
+const THEMES = {
+  onecx: {
+    font: {},
+    topbar: { 'topbar-bg-color': '#0D3650', 'topbar-item-text-color': '#ffffff', 'topbar-text-color': '#ffffff', 'topbar-left-bg-color': '#0D3650',
+              'topbar-item-text-hover-bg-color': 'rgba(255, 255, 255, 0.12)', 'topbar-menu-button-bg-color': 'rgb(255 0 68)',
+              'topbar-menu-button-text-color': '#ffffff', 'logo-color': '#ffffff' },
+    general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257', 'text-color': 'rgba(0, 0, 0, 0.87)', 'text-secondary-color': '#262626',
+               'body-bg-color': '#f7f7f7', 'content-bg-color': '#ffffff', 'content-alt-bg-color': '#ffffff', 'overlay-content-bg-color': '#ffffff',
+               'hover-bg-color': '#ad1457', 'solid-surface-text-color': '#ffffff', 'divider-color': '#e4e4e4', 'button-hover-bg': '#ad1457',
+               'danger-button-bg': '#D32F2F', 'info-message-bg': '#b3e5fc', 'success-message-bg': '#c8e6c9', 'warning-message-bg': '#ffecb3',
+               'error-message-bg': '#ffcdd2' },
+    sidebar: { 'menu-text-color': '#274B5F', 'menu-bg-color': '#fdfeff', 'menu-item-text-color': '#515c66', 'menu-item-hover-bg-color': '#e4e4e4',
+               'menu-active-item-text-color': '#515c66', 'menu-active-item-bg-color': 'rgba(0, 0, 0, 0.04)', 'inline-menu-border-color': '#e4e4e4' }
+  },
+  // only what the libs need to start (general.primary-color is mandatory)
+  none: { general: { 'primary-color': '#274B5F', 'secondary-color': '#1C4257' } }
+};
+if (!THEMES[THEME_NAME]) console.error(`[onecx-test] THEME = '${THEME_NAME}' is unknown: use 'onecx' or 'none'`);
+const THEME_PROPERTIES = THEMES[THEME_NAME] ?? THEMES.none;
+for (const group of Object.values(THEME_PROPERTIES))
+  for (const [k, v] of Object.entries(group)) document.documentElement.style.setProperty('--' + k, v);
+if (THEME_NAME === 'onecx') {
+  const fonts = [300, 400, 500, 700].map((w) =>
+    `@font-face { font-family: 'Ubuntu'; font-style: normal; font-weight: ${w}; font-display: swap; src: url(/__onecx-test/fonts/ubuntu-${w}.woff2) format('woff2'); }`);
+  document.head.insertAdjacentHTML('beforeend', `<style id="onecx-test-theme">${fonts.join('\n')}
+    :root { font-size: 14px; }
+    body { font-family: Ubuntu, Helvetica Neue Light, Helvetica Neue, Helvetica, Arial, Lucida Grande, sans-serif;
+           background-color: var(--body-bg-color); color: var(--text-color); }
+    body a { text-decoration: none; color: var(--text-secondary-color); }
+  </style>`);
+}
+
+const PERMISSION_LIST = Array.isArray(PERMISSIONS) ? PERMISSIONS : (console.error('[onecx-test] PERMISSIONS must be a list like ["BOOK#SEARCH"]'), []);
+
+// Values the shell would publish, by topic class of @onecx/integration-interface (published in section 7).
+const TOPICS = {
+  CurrentMfeTopic: { appId: TEST.appId, productName: TEST.productName, remoteBaseUrl: location.origin + '{{BASE}}', baseHref: TEST.mountPath,
+                mountPath: TEST.mountPath, shellName: 'portal', displayName: TEST.appId, remoteName: TEST.productName, elementName: TEST.tagName, version: '0.0.0' },
+  PermissionsTopic: PERMISSION_LIST,
+  UserProfileTopic: { userId: 'test-user', organization: 'test-org', tenantId: 'test-tenant',
+                 person: { firstName: 'Test', lastName: 'User', displayName: 'Test User', email: 'test.user@example.com' },
+                 settings: { locales: [LOCALE] },
+                 accountSettings: { localeAndTimeSettings: { locale: LOCALE, timezone: 'Europe/Berlin' },
+                                    layoutAndThemeSettings: { menuMode: 'STATIC', colorScheme: 'LIGHT' } } },
+  IsAuthenticatedTopic: undefined,
+  ConfigurationTopic: {},
+  CurrentWorkspaceTopic: { workspaceName: 'test-workspace', portalName: 'test-workspace', displayName: 'Test Workspace', baseUrl: '/',
+                   homePage: '/', microfrontendRegistrations: [], routes: [] },
+  CurrentThemeTopic: { name: THEME_NAME === 'onecx' ? 'default' : 'test-theme', displayName: THEME_NAME === 'onecx' ? 'OneCX' : 'Test', properties: THEME_PROPERTIES },
+  CurrentLocationTopic: { url: location.pathname + location.search + location.hash, isFirst: true },
+  RemoteComponentsTopic: { components: [], slots: [] },
+  ParametersTopic: { parameters: [] },
+  ImageRepositoryTopic: { images: {} },
+  GlobalLoadingTopic: false
+};
+
+// 4. BFF mocks for XMLHttpRequest and fetch.
+const escapeRe = (s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+const mockFor = (method, url) => {
+  const path = new URL(url, location.href).pathname;
+  return MOCKS.find((m) => m.method.toUpperCase() === String(method).toUpperCase() &&
+    new RegExp('^' + new URL(m.url.split('?')[0], location.origin).pathname.split('*').map(escapeRe).join('[^/]+') + '$').test(path));
+};
+// BFF call = path with /bff/ (Angular) or a call to another server (generated React client: http://onecx-<name>-bff:8080/...)
+const isApiCall = (url) => { const u = new URL(url, location.href); return u.origin !== location.origin || u.pathname.includes('/bff/'); };
+const noMock = (method, url) => console.warn('[onecx-test] NO MOCK for', String(method).toUpperCase(), new URL(url, location.href).pathname);
+const bodyText = (mock) => (mock.body == null ? '' : typeof mock.body === 'string' ? mock.body : JSON.stringify(mock.body));
+const xhrOpen = XMLHttpRequest.prototype.open, xhrSend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open = function (method, url, ...rest) { this.__onecxTest = { method, url: String(url) }; return xhrOpen.call(this, method, url, ...rest); };
+XMLHttpRequest.prototype.send = function (body) {
+  const { method, url } = this.__onecxTest ?? {};
+  let mock = method && mockFor(method, url);
+  if (!mock && url && isApiCall(url)) {
+    noMock(method, url);
+    if (new URL(url, location.href).origin !== location.origin) mock = { status: 501, body: { error: 'NO MOCK' }, delayMs: 0 };
+  }
+  if (!mock) return xhrSend.call(this, body);
+  log('mock', method, new URL(url, location.href).pathname, '->', mock.status);
+  const text = bodyText(mock);
+  const set = (k, v) => Object.defineProperty(this, k, { configurable: true, get: () => v });
+  setTimeout(() => {
+    set('readyState', 4); set('status', mock.status); set('statusText', mock.status < 400 ? 'OK' : 'Error');
+    set('responseURL', new URL(url, location.href).href); set('responseText', text);
+    let response = text;
+    if (this.responseType === 'json') response = text ? JSON.parse(text) : null;
+    else if (this.responseType === 'blob') response = new Blob([text], { type: 'application/json' });
+    else if (this.responseType === 'arraybuffer') response = new TextEncoder().encode(text).buffer;
+    set('response', response);
+    this.getAllResponseHeaders = () => 'content-type: application/json\r\n';
+    this.getResponseHeader = (h) => (h.toLowerCase() === 'content-type' ? 'application/json' : null);
+    for (const t of ['readystatechange', 'load', 'loadend']) this.dispatchEvent(new ProgressEvent(t));
+  }, mock.delayMs ?? 50);
+};
+const realFetch = window.fetch;
+window.fetch = async (input, init) => {
+  const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+  const method = init?.method ?? (typeof input === 'object' && 'method' in input ? input.method : 'GET');
+  const mock = mockFor(method, url);
+  if (!mock) {
+    if (!isApiCall(url)) return realFetch(input, init);
+    noMock(method, url);
+    // calls to another server would only fail with a DNS error: answer them here
+    if (new URL(url, location.href).origin !== location.origin) return new Response(JSON.stringify({ error: 'NO MOCK' }), { status: 501, headers: { 'content-type': 'application/json' } });
+    return realFetch(input, init);
+  }
+  log('mock', method, new URL(url, location.href).pathname, '->', mock.status);
+  await new Promise((r) => setTimeout(r, mock.delayMs ?? 50));
+  const noBody = [204, 205, 304].includes(mock.status);
+  return new Response(noBody ? null : bodyText(mock), { status: mock.status, headers: { 'content-type': 'application/json' } });
+};
+</script>
+{{POLYFILLS}}
+</head>
+<body>
+<div id="onecx-test-toasts"></div>
+<div id="onecx-test-app"></div>
+<script type="module">
+// 5. Auth stub. Set it here, after the polyfills: zone.js clears every window property whose name starts with "on".
+const authProxy = { v1: { getHeaderValues: () => ({ Authorization: 'Bearer test-token', 'apm-principal-token': 'test-id-token' }),
+                          updateTokenIfNeeded: () => Promise.resolve(true) } };
+window.onecxAuth = { authServiceProxy: authProxy };
+window.onecxAngularAuth = { authServiceProxy: authProxy };
+
+// 6. Load the remote. init() registers the libraries the app shares (module federation share scope).
+try {
+  const container = await import(TEST.remoteEntry);
+  const shareScope = {};
+  await container.init(shareScope);
+
+  // 7. Topics: this page uses the app's own @onecx/integration-interface from the share scope, like the shell
+  //    uses its copy. A topic object keeps its last value and gives it to topics the app creates later.
+  const versions = shareScope['@onecx/integration-interface'];
+  if (!versions) throw new Error(`app error: the app must list '@onecx/integration-interface' under shared in its module federation config `
+    + '(module-federation.config.js / webpack.config.js / vite.config.ts). OneCX needs it shared; without it the app is broken in the shell too.');
+  // an app registers exactly its own copy; with several, take the highest version
+  const newest = Object.keys(versions).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
+  const shared = versions[newest];
+  const loaded = await shared.get();
+  const lib = typeof loaded === 'function' ? loaded() : loaded;
+  // One object per topic class. Keep them: they hold the values and answer topics the app creates later.
+  const topics = new Map();
+  const topic = (cls) => {
+    if (!topics.has(cls)) topics.set(cls, lib[cls] ? new lib[cls]() : (log('this library version has no', cls), undefined));
+    return topics.get(cls);
+  };
+
+  await Promise.all(Object.entries(TOPICS).map(([cls, value]) => topic(cls)?.publish(value)));
+
+  const permissionsRpc = topic('PermissionsRpcTopic');
+  permissionsRpc?.subscribe((m) => { if (m && m.permissions === undefined) permissionsRpc.publish({ ...m, permissions: PERMISSION_LIST }); });
+  topic('MessageTopic')?.subscribe((m) => {
+    log('app message:', m?.severity, m?.summary ?? m?.summaryKey, m?.detail ?? '');
+    const d = document.createElement('div');
+    d.textContent = (m?.severity ?? '') + ': ' + (m?.summary ?? m?.summaryKey ?? '');
+    document.getElementById('onecx-test-toasts').appendChild(d);
+    setTimeout(() => d.remove(), 6000);
+  });
+  topic('GlobalErrorTopic')?.subscribe((e) => console.error('[onecx-test] app globalError:', e));
+
+  // /test and every path below it belong to the app: tell the app about navigations like the shell does.
+  const currentLocation$ = topic('CurrentLocationTopic');
+  const currentUrl = () => location.pathname + location.search + location.hash;
+  for (const fn of ['pushState', 'replaceState']) {
+    const orig = history[fn];
+    history[fn] = function (state, ...rest) {
+      const r = orig.call(this, state, ...rest);
+      if (!state?.isRouterSync) currentLocation$?.publish({ url: currentUrl(), isFirst: false });
+      return r;
+    };
+  }
+  window.addEventListener('popstate', () => currentLocation$?.publish({ url: currentUrl(), isFirst: false }));
+
+  // 8. Run the app's bootstrap, then put the web component into the page.
+  const factory = await container.get(TEST.exposedModule);
+  factory();
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error(
+    `web component <${TEST.tagName}> was not defined within 20 s: check the tag name in src (createAppEntrypoint / createViteAppWebComponent)`)), 20000));
+  await Promise.race([customElements.whenDefined(TEST.tagName), timeout]);
+  const el = document.createElement(TEST.tagName);
+  el.dataset.styleId = TEST.productName + '|' + TEST.appId;
+  el.dataset.styleIsolation = '';
+  el.dataset.mfeElement = '';
+  document.getElementById('onecx-test-app').appendChild(el);
+  console.log('[onecx-test] READY', TEST.tagName);
+} catch (e) {
+  console.error('[onecx-test] LOAD FAILED: ' + (e?.message ?? e));
+}
+</script>
+</body>
+</html>
