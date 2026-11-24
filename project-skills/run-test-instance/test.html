@@ -8,7 +8,6 @@
 <meta charset="utf-8" />
 <title>OneCX test: {{APP_ID}}</title>
 <base href="/" />
-{{STYLES_LINK}}
 <style>
   body { margin: 0; padding: 16px; font-family: Arial, Helvetica, sans-serif; } /* 'onecx' replaces the font */
   /* screen-reader-only helpers the shell's layout CSS normally hides */
@@ -61,11 +60,88 @@ globalThis.APP_CONFIG = { APP_BASE_HREF: '/' };
 
 // 2. Hooks the shell puts on document. The build of the app rewrites PrimeNG / Material code to call them.
 const createEl = (ctx, tag, opts) => document.createElement(typeof tag === 'string' ? tag : ctx?.element, opts);
-document.createOnecxElement = createEl;
+
+// Scope data (data-style-id ...) of the closest element that has it. The shell reads it the same way.
+const styleDataOf = (el) => {
+  for (let e = el; e instanceof HTMLElement; e = e.parentElement) {
+    const d = e.dataset;
+    if (d.styleId || d.intermediateStyleId) {
+      return { styleId: d.styleId ?? d.intermediateStyleId,
+               noPortalLayoutStyles: d.noPortalLayoutStyles ?? d.intermediateNoPortalLayoutStyles,
+               mfeElement: d.mfeElement ?? d.intermediateMfeElement };
+    }
+  }
+  return null;
+};
+const STYLE_KEYS = ['styleIsolation', 'styleId', 'noPortalLayoutStyles', 'mfeElement'];
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+const setStyleData = (el, d, intermediate) => {
+  const key = (k) => (intermediate ? 'intermediate' + cap(k) : k);
+  el.dataset[key('styleIsolation')] = '';
+  if (d.styleId) el.dataset[key('styleId')] = d.styleId;
+  if (d.noPortalLayoutStyles || d.noPortalLayoutStyles === '') el.dataset[key('noPortalLayoutStyles')] = d.noPortalLayoutStyles;
+  if (d.mfeElement || d.mfeElement === '') el.dataset[key('mfeElement')] = d.mfeElement;
+};
+const clearStyleData = (el) => {
+  if (el.dataset) for (const k of STYLE_KEYS) { delete el.dataset[k]; delete el.dataset['intermediate' + cap(k)]; }
+  for (const c of Array.from(el.children)) if (c instanceof HTMLElement) clearStyleData(c);
+};
+
+// The shell takes the scope of dynamic content from the element the user touched last.
+let triggerElement = null;
+for (const type of ['mouseover', 'focusin']) document.addEventListener(type, (e) => { triggerElement = e.target; });
+const triggerStyleData = () => styleDataOf(triggerElement) ?? styleDataOf(document.querySelector('#onecx-test-app [data-style-id]'));
+
+document.createOnecxElement = (ctx, tag, opts) => {
+  const el = createEl(ctx, tag, opts);
+  const d = styleDataOf(ctx?.this?.el?.nativeElement) ?? triggerStyleData();
+  if (d) setStyleData(el, d, true);
+  return el;
+};
+document.createElementFromPrimeNg = document.createOnecxElement;
+document.createElementFromMaterial = (ctx, tag, opts) => {
+  const el = createEl(ctx, tag, opts);
+  const d = triggerStyleData();
+  if (d) setStyleData(el, d, true);
+  return el;
+};
 document.createElementFromSharedStylesHost = createEl;
-document.createElementFromPrimeNg = createEl;
-document.createElementFromMaterial = createEl;
-document.createOnecxDynamicContainer = (tag) => { const c = document.createElement(tag); document.body.appendChild(c); return c; };
+
+// Like the shell, put every element that is appended to <body> (PrimeNG / Optimus overlays, dialogs) into a wrapper that
+// carries the scope data of the element the user touched last. Without it the scoped styles do not reach the overlay.
+// The wrapper is removed with its content.
+const WRAPPER = 'dynamicWrapperElement';
+// The script runs in <head>, so patch the prototype of <body> instead of the not yet existing element.
+const bodyAppendChild = HTMLBodyElement.prototype.appendChild;
+const bodyRemoveChild = HTMLBodyElement.prototype.removeChild;
+HTMLBodyElement.prototype.appendChild = function (node) {
+  const skip = !(node instanceof HTMLElement) || node.classList.contains('cdk-overlay-container')
+    || node.classList.contains('cdk-visually-hidden') || node.dataset.onecxDynamicContainer !== undefined;
+  if (skip) return bodyAppendChild.call(this, node);
+  const wrapper = document.createElement('div');
+  wrapper.dataset[WRAPPER] = '';
+  const d = styleDataOf(node) ?? triggerStyleData();
+  if (d) setStyleData(wrapper, d, false);
+  clearStyleData(node);
+  wrapper.appendChild(node);
+  new MutationObserver((_, observer) => { if (!wrapper.childNodes.length) { wrapper.remove(); observer.disconnect(); } })
+    .observe(wrapper, { childList: true });
+  return bodyAppendChild.call(this, wrapper);
+};
+HTMLBodyElement.prototype.removeChild = function (node) {
+  let e = node;
+  while (e && e.dataset?.[WRAPPER] !== '' && e.parentElement) e = e.parentElement;
+  return bodyRemoveChild.call(this, e?.dataset?.[WRAPPER] === '' ? e : node);
+};
+
+document.createOnecxDynamicContainer = (tag, appElementName) => {
+  const c = document.createElement(tag);
+  const d = styleDataOf(document.getElementsByTagName(appElementName)[0]);
+  if (d) setStyleData(c, d, false);
+  c.dataset.onecxDynamicContainer = '';
+  document.body.appendChild(c);
+  return c;
+};
 
 // 3. Theme. 'onecx' = theme "default" of onecx-local-env (onecx-data/theme/default_OneCX.json) plus the global styles
 //    the shell puts on the page (@onecx/portal-layout-styles theme_defaults.scss, shell global-styles.scss).
@@ -241,6 +317,19 @@ try {
     };
   }
   window.addEventListener('popstate', () => currentLocation$?.publish({ url: currentUrl(), isFirst: false }));
+
+  // 7b. Load the app's styles.css like the shell: a <style data-app-styles> inside @scope, not a <link>. The app finds this
+  //     element by its scope id and rewrites the --p- variables to its scoped prefix; a <link> is never rewritten, so colour
+  //     utilities such as bg-surface-50 would render transparent. 'html' and ':root' become ':scope' as the shell does it.
+  const stylesUrl = '{{STYLES_URL}}';
+  if (stylesUrl) {
+    const scopeId = TEST.productName + '|' + TEST.appId;
+    const css = await fetch(stylesUrl).then((r) => r.text());
+    const style = document.createElement('style');
+    style.setAttribute('data-app-styles', scopeId);
+    style.textContent = `@scope([data-style-id="${scopeId}"]:is([data-no-portal-layout-styles], [data-mfe-element])) to ([data-style-isolation]) { ${css.replaceAll('html', ':scope').replaceAll(':root', ':scope')} }`;
+    document.head.appendChild(style);
+  }
 
   // 8. Run the app's bootstrap, then put the web component into the page.
   const factory = await container.get(TEST.exposedModule);

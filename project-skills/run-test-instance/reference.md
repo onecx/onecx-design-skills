@@ -11,7 +11,7 @@ Verified with onecx-tenant-ui (Angular 19, libs 6), a generated Angular 21 app (
 - `get('<exposed module>')()` runs the app's bootstrap, which defines the web component (`customElements.define`). The page
   then creates the element with the attributes the shell sets: `data-style-id="<productName>|<appId>"`, `data-style-isolation`,
   `data-mfe-element` (without them the scoped PrimeNG styles do not apply).
-- Angular: `polyfills.js` (zone.js) is loaded by the page, the shell normally provides it. `styles.css` of the app is linked.
+- Angular: `polyfills.js` (zone.js) is loaded by the page, the shell normally provides it. `styles.css` of the app is added like the shell does it: as `<style data-app-styles="<productName>|<appId>">` inside `@scope(...)`, not as a `<link>` (the app rewrites the `--p-` variables of that element to its scoped prefix, a `<link>` stays unrewritten and colour utilities render transparent).
 - The page lives at `/test`; the app's `baseHref` is `/test/`. No trailing slash on the page url: the Angular router does not
   match `test/`. App routes are below it: `/test/book`.
 - Vite production builds use base `/mfe/<name>/`; `init` reads the base from `dist/index.html`, `serve` mounts dist there.
@@ -50,6 +50,11 @@ and the page gets the global styles of the shell (`@onecx/portal-layout-styles` 
   without it every BFF call fails before it is sent. Set **after** zone.js has loaded: zone.js clears every `window.on*` property.
 - `document.createElementFromPrimeNg`, `createElementFromMaterial`, `createOnecxElement`, `createElementFromSharedStylesHost`,
   `createOnecxDynamicContainer`: the app build rewrites PrimeNG/Material code to call them (dialogs, overlays).
+- Scope of dynamic content. The app's CSS only applies inside an element with `data-style-id` (see Loading the app), so an overlay
+  that PrimeNG/Optimus appends to `<body>` would be unstyled. Like the shell, the page (1) remembers the element the user touched
+  last (`mouseover`, `focusin`), (2) patches `appendChild`/`removeChild` of `<body>` so every appended element is put into a
+  `<div data-dynamic-wrapper-element>` that carries the scope data of that element (the wrapper is removed with its content), and
+  (3) gives the dynamic container created by `createOnecxDynamicContainer` the scope data of the app element.
 - `window['onecx-shell-capabilities']` and `globalThis.APP_CONFIG = { APP_BASE_HREF: '/' }` (React reads it instead of
   `assets/env.json`, which still holds `${...}` placeholders after a build).
 

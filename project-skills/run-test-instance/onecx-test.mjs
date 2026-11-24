@@ -242,7 +242,7 @@ function init() {
     .replaceAll('{{EXPOSED_MODULE}}', fed.exposedModule)
     .replaceAll('{{BASE}}', base)
     .replaceAll('{{THEME}}', theme)
-    .replaceAll('{{STYLES_LINK}}', styles ? `<link rel="stylesheet" href="${base}${styles}" />` : '')
+    .replaceAll('{{STYLES_URL}}', styles ? `${base}${styles}` : '')
     .replaceAll('{{PERMISSIONS}}', JSON.stringify(permissions))
     .replaceAll('{{MOCKS}}', mocks.join('\n'))
     .replaceAll('{{POLYFILLS}}', polyfills ? `<script src="${base}${polyfills}" type="module"></script>` : '')
